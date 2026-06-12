@@ -90,15 +90,25 @@ void DaliBusComponent::setup() {
     create_discovery_button();
     create_reboot_button();
 
+    // Passive input-device listener (Part 103 push buttons / sensors).
+    if (m_input_devices) {
+        m_input_listener.input_listener_setup(m_rxPin);
+    }
+
     // Discovery must also run in setup(): dynamically created light entities are only
     // advertised to Home Assistant in the entity list it requests once at connect time.
     // (Running discovery later, e.g. via the button, won't surface NEW lights in HA
     // until the next reboot.)
     if (m_discovery) {
         run_discovery();
-    } else {
-        // No discovery -> nothing for loop() to drive.
+    } else if (!m_input_devices) {
+        // No discovery and no listener -> nothing for loop() to drive.
         this->disable_loop();
+    }
+
+    // The input listener needs loop() running even if discovery disabled it.
+    if (m_input_devices) {
+        this->enable_loop();
     }
 }
 
@@ -139,7 +149,7 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
         DALI_LOGD("Detected control gear on bus");
     } else {
         DALI_LOGE("No DALI control gear detected on bus!");
-        this->disable_loop();
+        if (!m_input_devices) this->disable_loop();
         return; // Unlikely to get anything from discovery if no one responds to this
     }
 
@@ -275,7 +285,8 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
     DALI_LOGI("DALI discovery finished in %u ms", (unsigned) (millis() - this->discovery_start_ms_));
 
     // If no dynamic lights were discovered, disable loop() to avoid unnecessary CPU cycles.
-    if (m_dynamic_lights.empty()) {
+    // (Keep it running if the input-device listener needs it.)
+    if (m_dynamic_lights.empty() && !m_input_devices) {
         this->disable_loop();
     }
 }
@@ -346,6 +357,9 @@ void DaliBusComponent::create_reboot_button() {
 }
 
 void DaliBusComponent::loop() {
+    if (m_input_devices) {
+        m_input_listener.input_listener_loop();
+    }
     for (auto* light : m_dynamic_lights) {
         light->loop();
     }
@@ -409,6 +423,9 @@ void DaliBusComponent::resetBus() {
 }
 
 void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
+    // Don't let the input listener decode our own transmission.
+    if (m_input_devices) m_input_listener.set_suppressed(true);
+
     if (DEBUG_LOG_RXTX) {
         DALI_LOGD("TX: %02x %02x", address, data);
         delayMicroseconds(BIT_PERIOD*8);
@@ -428,10 +445,15 @@ void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
     // Non critical delay
     delayMicroseconds(HALF_BIT_PERIOD*2);
     delayMicroseconds(BIT_PERIOD*4); // Optional, for clarity in scope trace
+
+    if (m_input_devices) m_input_listener.set_suppressed(false);
 }
 
 uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
     uint8_t data;
+
+    // The backward frame is the device's response to us — not an input event.
+    if (m_input_devices) m_input_listener.set_suppressed(true);
 
     unsigned long startTime = millis();
 
@@ -442,6 +464,7 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
             if (DEBUG_LOG_RXTX) {
                 DALI_LOGD("RX: 00 (NACK)");
             }
+            if (m_input_devices) m_input_listener.set_suppressed(false);
             return 0;
         }
     }
@@ -461,6 +484,7 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
     }
 
     // Minimum time before we can send another forward frame
-    delayMicroseconds(BIT_PERIOD*8); 
+    delayMicroseconds(BIT_PERIOD*8);
+    if (m_input_devices) m_input_listener.set_suppressed(false);
     return data;
 }

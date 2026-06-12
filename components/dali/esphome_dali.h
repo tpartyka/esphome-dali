@@ -10,6 +10,7 @@
 #include <esphome.h>
 #include <vector>
 #include "dali.h"
+#include "esphome_dali_input.h"
 
 namespace esphome {
 namespace dali {
@@ -32,7 +33,9 @@ public:
     void dump_config() override;
 
     void set_tx_pin(GPIOPin* tx_pin) { m_txPin = tx_pin; }
-    void set_rx_pin(GPIOPin* rx_pin) { m_rxPin = rx_pin; }
+    // RX must be interrupt-capable (InternalGPIOPin) so the input-device listener
+    // can attach an edge interrupt; digital_read still works for the bit-bang RX.
+    void set_rx_pin(InternalGPIOPin* rx_pin) { m_rxPin = rx_pin; }
 
     /// @brief Perform automatic device discovery on setup.
     /// Light components will automatically be created and appear in HomeAssistant
@@ -62,6 +65,14 @@ public:
     /// auto-created "Run DALI Discovery" button.
     void scan_and_assign();
 
+    /// @brief Enable passive listening for DALI input-device (Part 103) frames.
+    void do_input_devices() { m_input_devices = true; }
+
+    /// @brief Register a callback for every decoded input-device frame.
+    void add_on_input_frame_callback(std::function<void(DaliInputFrame)> cb) {
+        m_input_listener.add_on_input_frame_callback(std::move(cb));
+    }
+
     void register_static_addr(short_addr_t short_addr) {
         if (short_addr < ADDR_SHORT_MAX) {
             m_addresses[short_addr] = 0xFFFFFF;
@@ -84,8 +95,11 @@ private:
     void create_discovery_button();
     void create_reboot_button();
 
-    GPIOPin* m_rxPin;
+    InternalGPIOPin* m_rxPin;
     GPIOPin* m_txPin;
+
+    DaliInputListener m_input_listener;
+    bool m_input_devices = false;
 
     bool m_discovery = false;
     uint32_t discovery_start_ms_ = 0;  // millis() when the deferred-discovery wait began

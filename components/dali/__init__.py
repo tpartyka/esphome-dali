@@ -1,6 +1,6 @@
 from typing import OrderedDict
-from esphome import pins
-from esphome.const import CONF_ID, CONF_RX_PIN, CONF_TX_PIN, CONF_DISCOVERY
+from esphome import automation, pins
+from esphome.const import CONF_ID, CONF_RX_PIN, CONF_TX_PIN, CONF_DISCOVERY, CONF_TRIGGER_ID
 from esphome.core import CORE
 
 import esphome.codegen as cg
@@ -10,10 +10,14 @@ AUTO_LOAD = ["light", "output", "button"]
 
 CONF_DALI_BUS = 'dali_bus'
 CONF_INITIALIZE_ADDRESSES = 'initialize_addresses'
+CONF_INPUT_DEVICES = 'input_devices'
+CONF_ON_INPUT_FRAME = 'on_input_frame'
 
 dali_ns = cg.esphome_ns.namespace('dali')
 dali_lib_ns = cg.global_ns
 DaliBusComponent = dali_ns.class_('DaliBusComponent', cg.Component)
+DaliInputFrame = dali_ns.struct('DaliInputFrame')
+DaliInputFrameTrigger = dali_ns.class_('DaliInputFrameTrigger', automation.Trigger.template(DaliInputFrame))
 
 DaliInitMode = dali_ns.enum('DaliInitMode', is_class=True)
 INIT_MODES = {
@@ -30,10 +34,15 @@ def _validate_init_mode(value):
 
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(DaliBusComponent),
-    cv.Required(CONF_RX_PIN): pins.gpio_input_pin_schema,
+    # RX must be interrupt-capable for the input-device listener.
+    cv.Required(CONF_RX_PIN): pins.internal_gpio_input_pin_schema,
     cv.Required(CONF_TX_PIN): pins.gpio_output_pin_schema,
     cv.Optional(CONF_DISCOVERY): cv.All(cv.requires_component("light"), cv.boolean),
     cv.Optional(CONF_INITIALIZE_ADDRESSES, default='none'): _validate_init_mode,
+    cv.Optional(CONF_INPUT_DEVICES, default=False): cv.boolean,
+    cv.Optional(CONF_ON_INPUT_FRAME): automation.validate_automation({
+        cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DaliInputFrameTrigger),
+    }),
 }).extend(cv.COMPONENT_SCHEMA)
 
 async def to_code(config: OrderedDict):
@@ -67,3 +76,12 @@ async def to_code(config: OrderedDict):
     init_mode = config[CONF_INITIALIZE_ADDRESSES]
     if init_mode != 'none':
         cg.add(var.do_initialize_addresses(INIT_MODES[init_mode]))
+
+    # Input-device listener: enabled by `input_devices: true` or implicitly when an
+    # on_input_frame automation is defined.
+    if config[CONF_INPUT_DEVICES] or CONF_ON_INPUT_FRAME in config:
+        cg.add(var.do_input_devices())
+
+    for conf in config.get(CONF_ON_INPUT_FRAME, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [(DaliInputFrame, 'x')], conf)
