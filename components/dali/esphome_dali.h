@@ -82,6 +82,7 @@ private:
 
     void create_light_component(short_addr_t short_addr, uint32_t long_addr);
     void create_discovery_button();
+    void create_reboot_button();
 
     GPIOPin* m_rxPin;
     GPIOPin* m_txPin;
