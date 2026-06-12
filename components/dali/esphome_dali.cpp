@@ -52,6 +52,24 @@ protected:
 
     DaliBusComponent* parent_;
 };
+
+// Auto-created (no YAML needed) "Reboot" button next to the discovery button.
+// Useful because newly discovered lights only appear in Home Assistant after a reboot.
+class DaliRebootButton : public esphome::button::Button, public esphome::Component {
+public:
+    void configure_dynamic_entity(const char* name, const char* object_id, esphome::EntityCategory category) {
+        uint32_t entity_fields =
+            (static_cast<uint32_t>(category) << esphome::ENTITY_FIELD_ENTITY_CATEGORY_SHIFT);
+        this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), entity_fields);
+    }
+
+protected:
+    void press_action() override {
+        ESP_LOGI("dali", "Rebooting device");
+        esphome::delay(100);  // let pending traffic settle
+        esphome::App.safe_reboot();
+    }
+};
 #endif  // USE_BUTTON
 
 }  // namespace
@@ -66,10 +84,11 @@ void DaliBusComponent::setup() {
 
     DALI_LOGI("DALI bus ready");
 
-    // Always expose the "Run DALI Discovery" button (no YAML required). It must be
-    // registered here in setup(), before the API client connects, otherwise Home
-    // Assistant won't list it.
+    // Always expose the "Run DALI Discovery" and "Reboot" buttons (no YAML required).
+    // They must be registered here in setup(), before the API client connects,
+    // otherwise Home Assistant won't list them.
     create_discovery_button();
+    create_reboot_button();
 
     // Discovery must also run in setup(): dynamically created light entities are only
     // advertised to Home Assistant in the entity list it requests once at connect time.
@@ -312,6 +331,17 @@ void DaliBusComponent::create_discovery_button() {
     static_cast<AppRegistrationAccessor&>(App).register_component_(btn);
 
     DALI_LOGI("Created DALI discovery button");
+#endif
+}
+
+void DaliBusComponent::create_reboot_button() {
+#ifdef USE_BUTTON
+    auto* btn = new DaliRebootButton {};
+    btn->configure_dynamic_entity("Reboot", "dali_reboot", ENTITY_CATEGORY_CONFIG);
+    App.register_button(btn);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(btn);
+
+    DALI_LOGI("Created DALI reboot button");
 #endif
 }
 
