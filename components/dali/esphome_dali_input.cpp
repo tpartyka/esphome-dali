@@ -7,10 +7,15 @@ namespace dali {
 static const char *const TAG = "dali.input";
 
 // ── ISR: timestamp every edge into the ring buffer ───────────────────────────
-// Kept minimal and in IRAM. Levels are not read here; the decoder reconstructs
-// them by alternation (DALI edges are >=416us apart, so we never miss enough to
-// desync within a single frame).
-void IRAM_ATTR DaliInputListener::gpio_intr(DaliInputListener *self) {
+// Kept minimal. NOT marked IRAM_ATTR: ESPHome installs the esp32 GPIO ISR
+// service without ESP_INTR_FLAG_IRAM, so the handler runs from flash (IRAM is a
+// scarce, often-full region on the esp32-s3). The only consequence is that edges
+// are not captured during the brief windows the flash cache is disabled, which
+// is harmless for a passive bus listener.
+//
+// Levels are not read here; the decoder reconstructs them by alternation (DALI
+// edges are >=416us apart, so we never miss enough to desync within a frame).
+void DaliInputListener::gpio_intr(DaliInputListener *self) {
   if (self->suppress_)
     return;
   uint16_t next = self->edge_head_ + 1;
