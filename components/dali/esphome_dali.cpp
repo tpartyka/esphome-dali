@@ -1,11 +1,15 @@
 #include <esphome.h>
 #include <esp_task_wdt.h>
+#include <cstring>
 #include "esphome_dali.h"
 #include "esphome_dali_light.h"
 #include "port.h"
+#ifdef USE_BUTTON
+#include "esphome/components/button/button.h"
+#endif
 
 //static const char *const TAG = "dali";
-static const bool DEBUG_LOG_RXTX = false; // NOTE: Will probably trigger WDT
+static const bool DEBUG_LOG_RXTX = true; // NOTE: Will probably trigger WDT
 
 using namespace esphome;
 using namespace dali;
@@ -27,94 +31,208 @@ public:
     }
 };
 
+#ifdef USE_BUTTON
+// Auto-created (no YAML needed) button in the Home Assistant "Configuration"
+// section. Pressing it logs the short addresses of already-assigned devices and
+// then assigns addresses to any unassigned (new) lamps on the bus.
+class DaliDiscoveryButton : public esphome::button::Button, public esphome::Component {
+public:
+    explicit DaliDiscoveryButton(DaliBusComponent* parent) : parent_(parent) {}
+
+    void configure_dynamic_entity(const char* name, const char* object_id, esphome::EntityCategory category) {
+        uint32_t entity_fields =
+            (static_cast<uint32_t>(category) << esphome::ENTITY_FIELD_ENTITY_CATEGORY_SHIFT);
+        this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), entity_fields);
+    }
+
+protected:
+    void press_action() override {
+        this->parent_->scan_and_assign();
+    }
+
+    DaliBusComponent* parent_;
+};
+#endif  // USE_BUTTON
+
 }  // namespace
 
 void DaliBusComponent::setup() {
+    DALI_LOGD("DALI bus setup start...");
     m_txPin->pin_mode(gpio::Flags::FLAG_OUTPUT);
     m_rxPin->pin_mode(gpio::Flags::FLAG_INPUT);
+
+    // Allow bus to stabilize before sending any commands
+    delay(500);
+
     DALI_LOGI("DALI bus ready");
 
+    // Always expose the "Run DALI Discovery" button (no YAML required). It must be
+    // registered here in setup(), before the API client connects, otherwise Home
+    // Assistant won't list it.
+    create_discovery_button();
+
+    // Discovery must also run in setup(): dynamically created light entities are only
+    // advertised to Home Assistant in the entity list it requests once at connect time.
+    // (Running discovery later, e.g. via the button, won't surface NEW lights in HA
+    // until the next reboot.)
     if (m_discovery) {
-        // Optional: reset devices on the bus so we are in a known-good state.
-        // Can help if devices are not responding to anything.
-        if (false) {
-            this->resetBus();
-            esp_task_wdt_reset();
+        run_discovery();
+    } else {
+        // No discovery -> nothing for loop() to drive.
+        this->disable_loop();
+    }
+}
+
+void DaliBusComponent::run_discovery() {
+    this->run_discovery(this->m_initialize_addresses);
+}
+
+void DaliBusComponent::scan_and_assign() {
+    // 1) Report the short addresses of devices already on the bus (non-destructive).
+    DALI_LOGI("Scanning bus for assigned short addresses (0-%d)...", ADDR_SHORT_MAX);
+    uint8_t found = 0;
+    for (uint8_t addr = 0; addr <= ADDR_SHORT_MAX; addr++) {
+        delay(1); // yield to ESP stack
+        esp_task_wdt_reset();
+        if (dali.isDevicePresent(addr)) {
+            found++;
+            DALI_LOGI("  Address %u: present", addr);
+        }
+    }
+    DALI_LOGI("Found %u assigned device(s) on the bus.", found);
+
+    // 2) Assign addresses to any unassigned (new) lamps. Already-addressed devices
+    // are left untouched (they do not enter initialization mode under ASSIGN_UNINITIALIZED).
+    run_discovery(DaliInitMode::InitializeUnassigned);
+}
+
+void DaliBusComponent::run_discovery(DaliInitMode mode) {
+    this->discovery_start_ms_ = millis();
+
+    // Optional: reset devices on the bus so we are in a known-good state.
+    // Can help if devices are not responding to anything.
+    if (false) {
+        this->resetBus();
+        esp_task_wdt_reset();
+    }
+
+    if (dali.bus_manager.isControlGearPresent()) {
+        DALI_LOGD("Detected control gear on bus");
+    } else {
+        DALI_LOGE("No DALI control gear detected on bus!");
+        this->disable_loop();
+        return; // Unlikely to get anything from discovery if no one responds to this
+    }
+
+    if (mode != DaliInitMode::DiscoverOnly) {
+        if (mode == DaliInitMode::InitializeAll) {
+            DALI_LOGI("Randomizing addresses for *all* DALI devices");
+            dali.bus_manager.initialize(ASSIGN_ALL);
+        }
+        else if (mode == DaliInitMode::InitializeUnassigned) {
+            // Only randomize devices without an assigned short address
+            DALI_LOGI("Randomizing addresses for unassigned DALI devices");
+            dali.bus_manager.initialize(ASSIGN_UNINITIALIZED);
         }
 
-        if (dali.bus_manager.isControlGearPresent()) {
-            DALI_LOGD("Detected control gear on bus");
-        } else {
-            DALI_LOGE("No DALI control gear detected on bus!");
-            return; // Unlikely to get anything from discovery if no one responds to this
-        }
+        dali.bus_manager.randomize();
 
-        if (this->m_initialize_addresses != DaliInitMode::DiscoverOnly) {
-            if (this->m_initialize_addresses == DaliInitMode::InitializeAll) {
-                DALI_LOGI("Randomizing addresses for *all* DALI devices");
-                dali.bus_manager.initialize(ASSIGN_ALL); 
-            } 
-            else if (this->m_initialize_addresses == DaliInitMode::InitializeUnassigned) {
-                // Only randomize devices without an assigned short address
-                DALI_LOGI("Randomizing addresses for unassigned DALI devices");
-                dali.bus_manager.initialize(ASSIGN_UNINITIALIZED); 
-            }
+        // DALI spec requires minimum 100ms after RANDOMIZE for devices to generate random address.
+        // Use 500ms to be safe with slower devices.
+        // NOTE: Do NOT call terminate() here - devices must stay in initialization mode
+        // for the binary search (startAddressScan) to work correctly.
+        delay(500);
+    }
 
-            dali.bus_manager.randomize();
-            dali.bus_manager.terminate();
+    DALI_LOGI("Begin device discovery...");
+    // Pass true = devices already in initialization mode from INITIALIZE command above.
+    // Do NOT re-send initialize(ASSIGN_ALL) which would override ASSIGN_UNINITIALIZED.
+    dali.bus_manager.startAddressScan(true);
 
-            // Seem to need a delay to allow time for devices to randomize...
-            delay(50);
-        }
+    // Keep track of short addresses to detect duplicates
+    bool duplicate_detected = false;
+    bool is_discovered[ADDR_SHORT_MAX+1];
+    for (int i = 0; i <= ADDR_SHORT_MAX; i++) {
+        is_discovered[i] = false;
+    }
 
-        DALI_LOGI("Begin device discovery...");
-        dali.bus_manager.startAddressScan(); // All devices
+    uint8_t count = 0;
+    short_addr_t short_addr = 0xFF;
+    uint32_t long_addr = 0;
+    while (dali.bus_manager.findNextAddress(short_addr, long_addr)) {
+        count++;
+        delay(1); // yield to ESP stack
+        esp_task_wdt_reset();
 
-        // Keep track of short addresses to detect duplicates
-        bool duplicate_detected = false;
-        bool is_discovered[ADDR_SHORT_MAX+1];
-        for (int i = 0; i <= ADDR_SHORT_MAX; i++) {
-            is_discovered[i] = false;
-        }
+        if (short_addr <= ADDR_SHORT_MAX) {
+            DALI_LOGI("  Device %.6x @ %.2x", long_addr, short_addr);
 
-        uint8_t count = 0;
-        short_addr_t short_addr = 0xFF;
-        uint32_t long_addr = 0;
-        while (dali.bus_manager.findNextAddress(short_addr, long_addr)) {
-            count++;
-            delay(1); // yield to ESP stack
-            esp_task_wdt_reset();
-
-            if (short_addr <= ADDR_SHORT_MAX) {
-                DALI_LOGI("  Device %.6x @ %.2x", long_addr, short_addr);
-
-                // Duplicate detection
-                if (is_discovered[short_addr]) {
-                    if (m_initialize_addresses == DaliInitMode::DiscoverOnly) {
-                        DALI_LOGW("  WARNING: Duplicate short address detected!");
-                        duplicate_detected = true;
-                    }
-                    else {
-                        // Assign a new address for this
-                        short_addr++;
-                        DALI_LOGD("  Duplicate short address detected, assigning a new address: %.2x", short_addr);
-
-                        if (!dali.bus_manager.programShortAddress(short_addr)) {
-                            DALI_LOGE("  Could not program short address");
-                            dali.bus_manager.withdrawCurrentDevice();
-                            short_addr = 0xFF;
-                            continue;
-                        }
-                    }
+            // Duplicate detection
+            if (is_discovered[short_addr]) {
+                if (mode == DaliInitMode::DiscoverOnly) {
+                    DALI_LOGW("  WARNING: Duplicate short address detected!");
+                    duplicate_detected = true;
                 }
                 else {
-                    is_discovered[short_addr] = true;
+                    // Assign a new address for this
+                    short_addr++;
+                    DALI_LOGD("  Duplicate short address detected, assigning a new address: %.2x", short_addr);
+
+                    if (!dali.bus_manager.programShortAddress(short_addr)) {
+                        DALI_LOGE("  Could not program short address");
+                        dali.bus_manager.withdrawCurrentDevice();
+                        short_addr = 0xFF;
+                        continue;
+                    }
+                }
+            }
+            else {
+                is_discovered[short_addr] = true;
+            }
+
+            // Withdraw after address is confirmed (spec order: find → program → withdraw)
+            dali.bus_manager.withdrawCurrentDevice();
+
+            // Dynamic component creation (if not defined in YAML)
+            if (m_addresses[short_addr]) {
+                DALI_LOGD("  Ignoring, already defined");
+            }
+            else {
+                m_addresses[short_addr] = long_addr;
+                create_light_component(short_addr, long_addr);
+            }
+        }
+        else if (short_addr == 0xFF) {
+            if (mode == DaliInitMode::DiscoverOnly) {
+                DALI_LOGI("  Device %.6x @ --", long_addr);
+                DALI_LOGW("  No short address assigned!");
+                dali.bus_manager.withdrawCurrentDevice();
+                continue;
+            }
+            else {
+                // count was already incremented at the top of the loop, so the
+                // first device gets short address 0.
+                short_addr = count - 1;
+                DALI_LOGI("  Assigning short address: %.2x", short_addr);
+
+                if (!dali.bus_manager.programShortAddress(short_addr)) {
+                    DALI_LOGE("  Could not program short address");
+                    dali.bus_manager.withdrawCurrentDevice();
+                    short_addr = 0xFF;
+                    continue;
                 }
 
-                // Withdraw after address is confirmed (spec order: find → program → withdraw)
+                // Withdraw after successful address programming
+                // (spec order: find → program → withdraw)
                 dali.bus_manager.withdrawCurrentDevice();
 
-                // Dynamic component creation (if not defined in YAML)
+                DALI_LOGI("  Device %.6x @ %.2x", long_addr, short_addr);
+
+                is_discovered[short_addr] = true;
+
+                // Dynamic component creation, same as the already-addressed branch.
+                // Without this, brand-new devices get an address programmed but no
+                // light entity is ever created.
                 if (m_addresses[short_addr]) {
                     DALI_LOGD("  Ignoring, already defined");
                 }
@@ -123,41 +241,19 @@ void DaliBusComponent::setup() {
                     create_light_component(short_addr, long_addr);
                 }
             }
-            else if (short_addr == 0xFF) {
-                if (m_initialize_addresses == DaliInitMode::DiscoverOnly) {
-                    DALI_LOGI("  Device %.6x @ --", long_addr);
-                    DALI_LOGW("  No short address assigned!");
-                    dali.bus_manager.withdrawCurrentDevice();
-                    continue;
-                }
-                else {
-                    short_addr = count;
-                    DALI_LOGI("  Assigning short address: %.2x", short_addr);
-
-                    if (!dali.bus_manager.programShortAddress(short_addr)) {
-                        DALI_LOGE("  Could not program short address");
-                        dali.bus_manager.withdrawCurrentDevice();
-                        short_addr = 0xFF;
-                        continue;
-                    }
-
-                    // Withdraw after successful address programming
-                    dali.bus_manager.withdrawCurrentDevice();
-
-                    DALI_LOGI("  Device %.6x @ %.2x", long_addr, short_addr);
-                }
-            }
-        }
-
-        DALI_LOGD("No more devices found!");
-        dali.bus_manager.endAddressScan();
-
-        if (duplicate_detected) {
-            DALI_LOGW("Duplicate short addresses detected on the bus!");
-            DALI_LOGW("  Devices may report inconsistent capabilities.");
-            DALI_LOGW("  You should fix your address assignments.");
         }
     }
+
+    DALI_LOGD("No more devices found!");
+    dali.bus_manager.endAddressScan();
+
+    if (duplicate_detected) {
+        DALI_LOGW("Duplicate short addresses detected on the bus!");
+        DALI_LOGW("  Devices may report inconsistent capabilities.");
+        DALI_LOGW("  You should fix your address assignments.");
+    }
+
+    DALI_LOGI("DALI discovery finished in %u ms", (unsigned) (millis() - this->discovery_start_ms_));
 
     // If no dynamic lights were discovered, disable loop() to avoid unnecessary CPU cycles.
     if (m_dynamic_lights.empty()) {
@@ -174,7 +270,11 @@ void DaliBusComponent::create_light_component(short_addr_t short_addr, uint32_t 
     char* name = new char[MAX_STR_LEN];
     char* id = new char[MAX_STR_LEN];
     snprintf(name, MAX_STR_LEN, "DALI Light %d", short_addr);
-    snprintf(id, MAX_STR_LEN, "dali_light_%.6x", long_addr);
+    // Identify the entity by the STABLE short address, not the long address. With
+    // initialize_addresses: all the long (random) address is regenerated on every
+    // discovery, so a long-address-based object id would change every boot and Home
+    // Assistant would lose track of the entity. Short addresses persist.
+    snprintf(id, MAX_STR_LEN, "dali_light_%d", short_addr);
     // NOTE: Not freeing these strings, they will be owned by LightState.
 
     auto* light_state = new DynamicDaliLightState { dali_light };
@@ -204,6 +304,17 @@ void DaliBusComponent::create_light_component(short_addr_t short_addr, uint32_t 
 #endif
 }
 
+void DaliBusComponent::create_discovery_button() {
+#ifdef USE_BUTTON
+    auto* btn = new DaliDiscoveryButton { this };
+    btn->configure_dynamic_entity("Run DALI Discovery", "dali_run_discovery", ENTITY_CATEGORY_CONFIG);
+    App.register_button(btn);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(btn);
+
+    DALI_LOGI("Created DALI discovery button");
+#endif
+}
+
 void DaliBusComponent::loop() {
     for (auto* light : m_dynamic_lights) {
         light->loop();
@@ -215,6 +326,8 @@ void DaliBusComponent::dump_config() {
     ESP_LOGCONFIG(TAG, "DALI Bus:");
     LOG_PIN("  TX Pin: ", m_txPin);
     LOG_PIN("  RX Pin: ", m_rxPin);
+    ESP_LOGCONFIG(TAG, "  m_discovery: %d", m_discovery);
+    ESP_LOGCONFIG(TAG, "  m_init_mode: %d", (int)m_initialize_addresses);
     ESP_LOGCONFIG(TAG, "  Discovery: %s", m_discovery ? "enabled" : "disabled");
     ESP_LOGCONFIG(TAG, "  Control Gear: %s", dali.bus_manager.isControlGearPresent() ? "present" : "not present");
     bool any = false;

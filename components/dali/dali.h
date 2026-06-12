@@ -400,7 +400,7 @@ DaliBusManager(DaliPort& port)
 
     //uint8_t scanAddresses(std::vector<uint32_t>& addresses);
 
-    void startAddressScan();
+    void startAddressScan(bool already_initialized = false);
     bool findNextAddress(short_addr_t& short_addr, uint32_t& long_addr);
     void withdrawCurrentDevice();
     void endAddressScan();
