@@ -1,5 +1,12 @@
 #pragma once
 
+// Include the specific esphome headers we depend on *before* <esphome.h>.
+// The generated esphome.h includes component headers alphabetically, so this
+// header can be pulled in before esphome/core/component.h is defined; relying on
+// <esphome.h> alone then fails with "expected class-name" on `public Component`.
+#include "esphome/core/component.h"
+#include "esphome/core/gpio.h"
+#include "esphome/components/light/light_state.h"
 #include <esphome.h>
 #include <vector>
 #include "dali.h"
@@ -42,6 +49,19 @@ public:
     // ie, this must be initialized first.
     float get_setup_priority() const override { return setup_priority::HARDWARE; }
 
+    /// @brief Run device discovery / address assignment.
+    /// The no-arg form uses the YAML-configured mode and is called once from setup().
+    /// The mode form lets callers force a specific behavior (e.g. the button uses
+    /// InitializeUnassigned). Lights found here only appear in Home Assistant if
+    /// registered before the API connects (i.e. during setup()).
+    void run_discovery();
+    void run_discovery(DaliInitMode mode);
+
+    /// @brief Button action: log the short addresses of already-assigned devices,
+    /// then assign addresses to any unassigned (new) lamps. Driven by the
+    /// auto-created "Run DALI Discovery" button.
+    void scan_and_assign();
+
     void register_static_addr(short_addr_t short_addr) {
         if (short_addr < ADDR_SHORT_MAX) {
             m_addresses[short_addr] = 0xFFFFFF;
@@ -61,11 +81,13 @@ private:
     uint8_t readByte();
 
     void create_light_component(short_addr_t short_addr, uint32_t long_addr);
+    void create_discovery_button();
 
     GPIOPin* m_rxPin;
     GPIOPin* m_txPin;
 
     bool m_discovery = false;
+    uint32_t discovery_start_ms_ = 0;  // millis() when the deferred-discovery wait began
     DaliInitMode m_initialize_addresses = DaliInitMode::DiscoverOnly;
     uint32_t m_addresses[ADDR_SHORT_MAX+1] = {0};
 

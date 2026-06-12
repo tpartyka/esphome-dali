@@ -59,6 +59,11 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
             DALI_LOGW("Skipping verification for 0x%.6x (no short address)", found_long);
         }
 
+        // Withdraw the device from the bus so it won't be found again in the next iteration.
+        // Per DALI spec: binary search → PROGRAM_SHORT_ADDRESS → WITHDRAW
+        withdrawCurrentDevice();
+        delayMilliseconds(10);
+
         count++;
     }
 
@@ -73,11 +78,15 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
     return count;
 }
 
-void DaliBusManager::startAddressScan() {
+void DaliBusManager::startAddressScan(bool already_initialized) {
     if (!this->_is_scanning) {
         this->_is_scanning = true;
-        // Put all devices on the bus into initialization mode, where they will accept special commands
-        initialize(0);
+        if (!already_initialized) {
+            // Put all devices on the bus into initialization mode
+            initialize(ASSIGN_ALL);
+        }
+        // If already_initialized=true, caller already sent INITIALIZE with correct mode
+        // (e.g. ASSIGN_UNINITIALIZED). Re-sending initialize(ASSIGN_ALL) would override it.
     }
 }
 
