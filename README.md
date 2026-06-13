@@ -50,54 +50,52 @@ dali:
   discovery: true
 
   # Devices will be automatically assigned a short address if they do not have one
-  initialize_addresses: true
-
-  # --- Optional settings (all shown with their defaults) ---
-
-  # How often to poll each lamp's actual state, so Home Assistant reflects
-  # changes made outside ESPHome (broadcast commands, another controller).
-  # 0s disables polling.
-  state_poll_interval: 15s
-
-  # Initial fade in/out times (also adjustable live via the "DALI Fade In/Out
-  # Time" number entities), in milliseconds.
-  default_fade_in_time: 1s
-  default_fade_out_time: 1s
-
-  # Where lamps go when mains power returns, or when the DALI bus itself
-  # fails. 'last' keeps the previous level, 'off', or a raw 0..254 level.
-  power_on_level: last
-  system_failure_level: last
-
-  # Diagnostic "online"/"problem" binary_sensors per lamp, and a "DALI Bus
-  # Online" connectivity sensor.
-  expose_availability: true
-  expose_problem: true
-  expose_bus_status: true
-
-  # Persist the discovered address inventory to flash, so lamp entities exist
-  # at boot even if the bus is briefly unreachable.
-  persist_inventory: true
-
-  # Auto-discover group membership and expose one "DALI Group N" light per
-  # active group (0-15).
-  expose_groups: true
-  max_groups: 16
-
-  # Expose 16 "DALI Scene N" recall buttons plus a scene-number selector and
-  # store/clear buttons (scenes 0-15).
-  expose_scenes: true
-
-  # Serve a small built-in web dashboard (see "Web Dashboard" below). ESP32 only.
-  expose_dashboard: false
-  dashboard_port: 8080
-
-  # Enable the push-button/input-device listener and multi-master collision
-  # avoidance on the bit-banged TX (see on_input_frame below).
-  input_devices: false
+  initialize_addresses: unassigned
 ```
 
 ![HomeAssistant Discovery](doc/ha-discovery.png)
+
+### `dali:` configuration reference
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | ID | auto-generated | Optional, but recommended if you reference this bus from `light:`/`output:` platform entries or multiple buses are defined. |
+| `tx_pin` | pin (output) | **required** | GPIO driving the DALI bus TX line. |
+| `rx_pin` | pin (input) | **required** | GPIO reading the DALI bus RX line. Must be an interrupt-capable GPIO — required for the input-device listener (`input_devices`/`on_input_frame`), even if you don't enable it. |
+| `discovery` | bool | `false` | Scan the bus and create a `light` entity for each detected DALI device (and group/scene entities, if enabled). Requires the `light` component. |
+| `initialize_addresses` | `none` \| `unassigned` \| `all` | `none` | Auto-assign short addresses. `unassigned` only assigns devices with no address yet; `all` re-initializes every device (disruptive — only use once when (re)commissioning a bus). `true`/`false` are accepted as legacy aliases for `unassigned`/`none`. |
+| `max_lights` | int, 1-64 | `64` | Reserved entity slots for lamps `discovery` may create. ESPHome sizes the light `StaticVector` at codegen time from this value — if discovery finds more lamps than this, the extras are silently dropped. Lower it only if you know your bus has fewer than 64 possible short addresses and want to save RAM. |
+| `state_poll_interval` | time | `15s` | How often to poll each lamp's actual on/off/brightness, so Home Assistant reflects changes made outside ESPHome (broadcast commands, another controller, scene recalls). The interval is divided across all pollable lamps. `0s` disables polling. |
+| `default_fade_in_time` | time | `1s` | Initial fade time used when turning a light on or increasing brightness. Adjustable live via the "DALI Fade In Time" number entity. Snapped to the nearest DALI fade-time step. |
+| `default_fade_out_time` | time | `1s` | Initial fade time used when turning a light off or decreasing brightness. Adjustable live via the "DALI Fade Out Time" number entity. |
+| `power_on_level` | `last` \| `off` \| `0`-`254` | `last` | Level a lamp returns to when mains power returns after an outage (DALI `POWER ON LEVEL`). `last` keeps the level from before the outage. |
+| `system_failure_level` | `last` \| `off` \| `0`-`254` | `last` | Level a lamp goes to if it loses DALI bus communication (DALI `SYSTEM FAILURE LEVEL`). |
+| `expose_availability` | bool | `true` | Create a diagnostic "online" `binary_sensor` per discovered lamp. |
+| `expose_problem` | bool | `true` | Create a diagnostic "problem" `binary_sensor` per discovered lamp, driven by the DALI `STATUS` lamp-failure bit. |
+| `expose_bus_status` | bool | `true` | Create a single "DALI Bus Online" connectivity `binary_sensor` reflecting whether the bus itself is responding. |
+| `persist_inventory` | bool | `true` | Persist the discovered short-address inventory to flash, so lamp entities exist at boot (as "unavailable" if missing) even before the bus has been re-polled. Only used when `discovery` is enabled. |
+| `expose_groups` | bool | `true` | Auto-discover DALI group membership and expose one optimistic "DALI Group N" light per active group. Only used when `discovery` is enabled. |
+| `max_groups` | int, 1-16 | `16` | Maximum number of group lights (`0`..`max_groups - 1`) `expose_groups` may create. Reserves the matching number of entity slots. |
+| `expose_scenes` | bool | `true` | Expose 16 "DALI Scene N" recall buttons (scenes 0-15), plus a scene-number selector and store/clear buttons. These always target the broadcast address — use the web dashboard's scene panel for group/lamp-targeted scenes. |
+| `expose_dashboard` | bool | `false` | Serve the built-in web dashboard (see "Web Dashboard" below) on `dashboard_port`. ESP32 only. |
+| `dashboard_port` | port | `8080` | TCP port for the web dashboard, when `expose_dashboard: true`. |
+| `input_devices` | bool | `false` | Enable the push-button/input-device listener and multi-master collision avoidance/detection on the bit-banged TX. Automatically enabled if `on_input_frame` is set. |
+| `on_input_frame` | automation trigger | — | Automation triggered for each frame captured from another DALI device (e.g. a push-button input device), with a `DaliInputFrame` struct (`short_address`, `instance_type`, `instance_number`, `button_event`, `event_info`, raw bits) as the trigger variable `x`. Implies `input_devices: true`. |
+
+Example using `on_input_frame`:
+
+```yaml
+dali:
+  id: dali_bus
+  tx_pin: 4
+  rx_pin: 12
+  discovery: true
+  on_input_frame:
+    then:
+      - logger.log:
+          format: "DALI input: short_addr=%d instance=%d button_event=%d"
+          args: [x.short_address, x.instance_number, x.button_event]
+```
 
 If you do not want to use automatic discovery, or want to customize a specific light,
 you can specify the light component with an address like so:
