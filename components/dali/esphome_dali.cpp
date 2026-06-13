@@ -7,6 +7,9 @@
 #ifdef USE_BUTTON
 #include "esphome/components/button/button.h"
 #endif
+#ifdef USE_NUMBER
+#include "esphome/components/number/number.h"
+#endif
 
 //static const char *const TAG = "dali";
 static const bool DEBUG_LOG_RXTX = true; // NOTE: Will probably trigger WDT
@@ -72,6 +75,32 @@ protected:
 };
 #endif  // USE_BUTTON
 
+#ifdef USE_NUMBER
+// Auto-created (no YAML) "Fade In/Out Time" numbers in the HA "Configuration"
+// section. Changing one updates the bus's fade time (in seconds); the value is
+// applied to the device's hardware fade on the next on/off/dim command.
+class DaliFadeNumber : public esphome::number::Number, public esphome::Component {
+public:
+    DaliFadeNumber(DaliBusComponent* parent, bool is_out) : parent_(parent), is_out_(is_out) {}
+
+    void configure_dynamic_entity(const char* name, const char* object_id) {
+        uint32_t entity_fields =
+            (static_cast<uint32_t>(esphome::ENTITY_CATEGORY_CONFIG) << esphome::ENTITY_FIELD_ENTITY_CATEGORY_SHIFT);
+        this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), entity_fields);
+    }
+
+protected:
+    void control(float value) override {
+        if (this->is_out_) this->parent_->set_fade_out_s(value);
+        else               this->parent_->set_fade_in_s(value);
+        this->publish_state(value);
+    }
+
+    DaliBusComponent* parent_;
+    bool is_out_;
+};
+#endif  // USE_NUMBER
+
 }  // namespace
 
 void DaliBusComponent::setup() {
@@ -89,6 +118,7 @@ void DaliBusComponent::setup() {
     // otherwise Home Assistant won't list them.
     create_discovery_button();
     create_reboot_button();
+    create_fade_numbers();
 
     // Passive input-device listener (Part 103 push buttons / sensors).
     if (m_input_devices) {
@@ -424,6 +454,25 @@ void DaliBusComponent::create_reboot_button() {
     static_cast<AppRegistrationAccessor&>(App).register_component_(btn);
 
     DALI_LOGI("Created DALI reboot button");
+#endif
+}
+
+void DaliBusComponent::create_fade_numbers() {
+#ifdef USE_NUMBER
+    auto make = [this](const char* name, const char* id, bool is_out, float initial) {
+        auto* n = new DaliFadeNumber { this, is_out };
+        n->traits.set_min_value(0.0f);
+        n->traits.set_max_value(16.0f);   // seconds; snapped to the nearest DALI step internally
+        n->traits.set_step(0.5f);
+        n->configure_dynamic_entity(name, id);
+        App.register_number(n);
+        static_cast<AppRegistrationAccessor&>(App).register_component_(n);
+        n->publish_state(initial);
+    };
+    make("DALI Fade In Time", "dali_fade_in_time", false, m_fade_in_s);
+    make("DALI Fade Out Time", "dali_fade_out_time", true, m_fade_out_s);
+
+    DALI_LOGI("Created DALI fade in/out time numbers");
 #endif
 }
 
