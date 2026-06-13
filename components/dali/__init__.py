@@ -13,6 +13,7 @@ CONF_INITIALIZE_ADDRESSES = 'initialize_addresses'
 CONF_INPUT_DEVICES = 'input_devices'
 CONF_ON_INPUT_FRAME = 'on_input_frame'
 CONF_MAX_LIGHTS = 'max_lights'
+CONF_STATE_POLL_INTERVAL = 'state_poll_interval'
 
 # A DALI bus addresses up to 64 control gears (short addresses 0-63), so that is
 # the natural upper bound for lights discovered at runtime.
@@ -52,6 +53,9 @@ CONFIG_SCHEMA = cv.Schema({
     # of lamps discovery will create or only that many appear in Home Assistant.
     cv.Optional(CONF_MAX_LIGHTS, default=DALI_MAX_SHORT_ADDRESSES):
         cv.int_range(min=1, max=DALI_MAX_SHORT_ADDRESSES),
+    # How often to poll each lamp's real state so Home Assistant reflects changes
+    # made outside ESPHome (broadcast commands, another controller). 0s disables it.
+    cv.Optional(CONF_STATE_POLL_INTERVAL, default='5s'): cv.positive_time_period_milliseconds,
     cv.Optional(CONF_INPUT_DEVICES, default=False): cv.boolean,
     cv.Optional(CONF_ON_INPUT_FRAME): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DaliInputFrameTrigger),
@@ -67,6 +71,8 @@ async def to_code(config: OrderedDict):
     
     tx_pin = await cg.gpio_pin_expression(config[CONF_TX_PIN])
     cg.add(var.set_tx_pin(tx_pin))
+
+    cg.add(var.set_state_poll_interval(config[CONF_STATE_POLL_INTERVAL]))
 
     # The component auto-creates the "Run DALI Discovery" and "Reboot" buttons with
     # no YAML (see create_discovery_button / create_reboot_button). Each

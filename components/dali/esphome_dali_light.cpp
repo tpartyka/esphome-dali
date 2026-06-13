@@ -114,6 +114,11 @@ void dali::DaliLight::setup_state(light::LightState *state) {
 
             s_setup_instance = this;
             state->set_initial_state(initial_state_trampoline);
+
+            // Remember our LightState and register with the bus so it polls this
+            // device and reflects external state changes back to Home Assistant.
+            this->state_ = state;
+            bus->register_pollable_light(this);
         }
         else {
             ESP_LOGW(TAG, "DALI device at addr %.2x not found!", address_);
@@ -222,4 +227,42 @@ void dali::DaliLight::write_state(light::LightState *state) {
 
     ESP_LOGD(TAG, "DALI[%d] B=%.2f (%d)", address_, brightness, dali_brightness);
     bus->dali.lamp.setBrightness(address_, (uint8_t)dali_brightness);
+}
+
+void dali::DaliLight::poll_and_publish() {
+    if (this->state_ == nullptr) return;
+
+    // Only individual short addresses can be queried; broadcast/group can't report a
+    // single state.
+    if ((this->address_ == ADDR_BROADCAST) || ((this->address_ & ADDR_GROUP_MASK) != 0)) return;
+
+    uint8_t level = bus->dali.lamp.getCurrentLevel(this->address_);
+    // 0xFF (MASK) = level unknown / device mid-fade — don't publish a bogus value.
+    if (level == 0xFF) return;
+
+    bool on = (level > 0);
+
+    // Start from the current published values so we preserve color temperature, then
+    // update on/off and brightness from what the device actually reports.
+    LightColorValues v = this->state_->remote_values;
+    v.set_state(on);
+    if (on) {
+        // Inverse of write_state()'s mapping, for a clean command/report round-trip.
+        float brightness = ((float) level - this->dali_level_min_ + 1) / this->dali_level_range_;
+        if (brightness < 0.0f) brightness = 0.0f;
+        if (brightness > 1.0f) brightness = 1.0f;
+        v.set_brightness(brightness);
+    }
+
+    // Skip if nothing meaningfully changed (avoid log/API spam every poll).
+    const LightColorValues &cur = this->state_->remote_values;
+    float db = cur.get_brightness() - v.get_brightness();
+    if (db < 0) db = -db;
+    bool changed = (cur.is_on() != v.is_on()) || (on && db > 0.02f);
+    if (!changed) return;
+
+    this->state_->current_values = v;
+    this->state_->remote_values = v;
+    this->state_->publish_state();
+    ESP_LOGD(TAG, "DALI[%d] external state -> %s (level %d)", this->address_, on ? "ON" : "OFF", level);
 }
