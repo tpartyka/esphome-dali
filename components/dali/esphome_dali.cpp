@@ -146,78 +146,7 @@ void DaliBusComponent::run_discovery() {
     this->run_discovery(this->m_initialize_addresses);
 }
 
-void DaliBusComponent::diagnose_rx() {
-    // Pause the input listener so it doesn't fight us for the line.
-    if (m_input_devices) m_input_listener.set_suppressed(true);
-
-    // --- 1) Idle level -------------------------------------------------------
-    // Sample the bus while nobody is transmitting. Tells us the true resting
-    // level (and whether it's stable) so we know which polarity is correct.
-    int high = 0;
-    for (int i = 0; i < 50; i++) {
-        if (m_rxPin->digital_read()) high++;
-        delayMicroseconds(200);
-    }
-    const char* idle_desc = high >= 45 ? "idle HIGH (stable)"
-                          : high <= 5  ? "idle LOW (stable)"
-                                       : "UNSTABLE/NOISY";
-    DALI_LOGI("RX-DIAG: idle level = %d/50 HIGH  -> %s", high, idle_desc);
-
-    // --- 2) Broadcast a query and capture the line ---------------------------
-    // Forward frame for "QUERY CONTROL GEAR PRESENT" to all devices:
-    //   address = (ADDR_BROADCAST << 1) | DALI_COMMAND = 0xFF, data = 0x91.
-    // Every device on the bus should answer YES (0xFF backward frame). We send
-    // the frame inline (no post-delays) and start sampling immediately so we
-    // capture the response from t=0, then log every transition with its timing.
-    const uint8_t addr = (ADDR_BROADCAST << 1) | DALI_COMMAND;  // 0xFF
-    const uint8_t data = static_cast<uint8_t>(DaliCommand::QUERY_CONTROL_GEAR_PRESENT);  // 0x91
-
-    const int MAX_EDGES = 80;
-    uint32_t t_us[MAX_EDGES];
-    uint8_t  lvl[MAX_EDGES];
-    int n = 0;
-
-    {
-        InterruptLock lock;  // keep the forward-frame bits clean
-        writeBit(1);         // START bit
-        writeByte(addr);
-        writeByte(data);
-        m_txPin->digital_write(LOW);  // release bus
-    }
-
-    // Capture transitions for ~16 ms (a backward frame is ~9 half-bits ≈ 4 ms and
-    // starts 3-9 ms after the forward stop, so 16 ms comfortably covers it).
-    bool last = m_rxPin->digital_read();
-    uint32_t start = micros();
-    t_us[n] = 0; lvl[n] = last; n++;
-    uint32_t now;
-    while ((now = micros()) - start < 16000) {
-        bool cur = m_rxPin->digital_read();
-        if (cur != last) {
-            if (n < MAX_EDGES) { t_us[n] = now - start; lvl[n] = cur; n++; }
-            last = cur;
-        }
-    }
-
-    if (n <= 1) {
-        DALI_LOGI("RX-DIAG: no transitions after broadcast query (line stayed %s for 16ms)",
-                  lvl[0] ? "HIGH" : "LOW");
-    } else {
-        DALI_LOGI("RX-DIAG: captured %d transition(s) after broadcast query:", n);
-        for (int i = 0; i < n; i++) {
-            uint32_t dur = (i + 1 < n) ? (t_us[i + 1] - t_us[i]) : 0;
-            DALI_LOGI("  t=%5u us  level=%s  held=%u us (~%u half-bits)",
-                      t_us[i], lvl[i] ? "HIGH" : "LOW", dur, (dur + 208) / 416);
-        }
-    }
-
-    if (m_input_devices) m_input_listener.set_suppressed(false);
-}
-
 void DaliBusComponent::scan_and_assign() {
-    // RX diagnostic first (one-shot, on button press) — see diagnose_rx().
-    diagnose_rx();
-
     // 1) Report the short addresses of devices already on the bus (non-destructive).
     DALI_LOGI("Scanning bus for assigned short addresses (0-%d)...", ADDR_SHORT_MAX);
     uint8_t found = 0;

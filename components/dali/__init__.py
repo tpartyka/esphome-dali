@@ -59,7 +59,7 @@ CONFIG_SCHEMA = cv.Schema({
         cv.int_range(min=1, max=DALI_MAX_SHORT_ADDRESSES),
     # How often to poll each lamp's real state so Home Assistant reflects changes
     # made outside ESPHome (broadcast commands, another controller). 0s disables it.
-    cv.Optional(CONF_STATE_POLL_INTERVAL, default='5s'): cv.positive_time_period_milliseconds,
+    cv.Optional(CONF_STATE_POLL_INTERVAL, default='15s'): cv.positive_time_period_milliseconds,
     # Initial fade in/out times (also adjustable live via the HA "DALI Fade In/Out
     # Time" number entities, in milliseconds). Snapped to the nearest DALI step.
     cv.Optional(CONF_DEFAULT_FADE_IN_TIME, default='1s'): cv.positive_time_period_milliseconds,
