@@ -325,6 +325,9 @@ private:
     // "DALI Group g" light twice across discovery passes.
     bool m_expose_groups = true;
     bool m_group_created_[16] = { false };
+    // DaliLight* for each created "DALI Group N" light, used to read/publish a
+    // group's own color temperature (scene CT capture/recall). nullptr if not created.
+    DaliLight* m_group_lights_[16] = { nullptr };
 
     // Scene controls.
     bool m_expose_scenes = true;

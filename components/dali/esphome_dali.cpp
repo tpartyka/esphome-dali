@@ -638,6 +638,13 @@ void DaliBusComponent::create_group_light_component(uint8_t group) {
     DaliLight* gl = new DaliLight { this };
     gl->set_address((short_addr_t) (ADDR_GROUP | (group & 0x0F)));
 
+    // Group addresses skip per-device capability detection (no single queryable
+    // state), so force color-temperature support using the default mired range.
+    // This is spec-legal: setColorTemperature() addresses the group via
+    // ENABLE_DEVICE_TYPE(COLOR) + an extended command, which only COLOR-type
+    // members of the group act on (IEC 62386-209).
+    gl->set_color_mode(DaliColorMode::COLOR_TEMPERATURE);
+
     const int MAX_STR_LEN = 20;
     char* name = new char[MAX_STR_LEN];
     char* id = new char[MAX_STR_LEN];
@@ -658,6 +665,7 @@ void DaliBusComponent::create_group_light_component(uint8_t group) {
         this->enable_loop();
     }
     m_dynamic_lights.push_back(light_state);
+    m_group_lights_[group & 0x0F] = gl;
 
     DALI_LOGI("Created group light component '%s' (%s)", name, id);
 #else
