@@ -12,6 +12,7 @@
 #include <vector>
 #include "dali.h"
 #include "esphome_dali_input.h"
+#include "esphome_dali_web.h"
 
 namespace esphome {
 
@@ -142,6 +143,59 @@ public:
     void set_selected_scene(uint8_t s) { m_selected_scene_ = (s > 15) ? 15 : s; }
     uint8_t selected_scene() const { return m_selected_scene_; }
 
+    /// @brief Short address (0..63) the Add/Remove Group buttons act on, set by the
+    /// "DALI Group Target Address" entity.
+    void set_group_target_address(uint8_t a) { m_group_target_addr_ = (a > ADDR_SHORT_MAX) ? ADDR_SHORT_MAX : a; }
+    uint8_t group_target_address() const { return m_group_target_addr_; }
+
+    /// @brief Group index (0..15) the Add/Remove Group buttons act on, set by the
+    /// "DALI Group Number" entity.
+    void set_group_number(uint8_t g) { m_group_number_ = (g > 15) ? 15 : g; }
+    uint8_t group_number() const { return m_group_number_; }
+
+    /// @brief Add/remove `addr` (a short address) to/from `group` (0..15). On add,
+    /// also creates the "DALI Group N" light if it doesn't exist yet, so the new
+    /// membership is immediately controllable. Updates the cached group-membership
+    /// table read by the web dashboard.
+    void add_to_group(uint8_t addr, uint8_t group);
+    void remove_from_group(uint8_t addr, uint8_t group);
+
+    /// @brief Add/remove the device at group_target_address() to/from group
+    /// group_number(). Thin wrappers around add_to_group/remove_from_group used by
+    /// the "DALI Add/Remove To Group" HA buttons.
+    void add_target_to_group() { add_to_group(m_group_target_addr_, m_group_number_); }
+    void remove_target_from_group() { remove_from_group(m_group_target_addr_, m_group_number_); }
+
+    /// @brief Scene actions usable with any target address: ADDR_BROADCAST, a short
+    /// address, or ADDR_GROUP|group. Used by the web dashboard's scene panel.
+    enum class SceneAction { Recall, Store, Remove };
+    void do_scene_action(uint8_t target_addr, uint8_t scene, SceneAction action);
+
+    /// @brief Briefly blink the lamp at `addr` (alternating min/max brightness a
+    /// few times, non-blocking via loop()) so the user can identify which physical
+    /// lamp it is, then restore its original brightness. Used by the web dashboard.
+    void identify_lamp(uint8_t addr);
+
+    /// @brief Cached per-lamp info exposed to the web dashboard. All fields come from
+    /// state already maintained by polling/discovery -- reading this never touches
+    /// the bus, so it's safe to call from any context that runs on the main task.
+    struct LampInfo {
+        uint8_t addr;
+        bool online;
+        bool problem;
+        bool on;
+        uint8_t brightness_pct;     // 0-100
+        bool has_color_temp;
+        uint16_t color_temp_mireds; // valid only if has_color_temp
+        uint16_t groups;            // bit N set => member of group N (0-15)
+    };
+    size_t lamp_count() const { return m_pollable_lights.size(); }
+    LampInfo lamp_info(size_t index) const;
+
+    /// @brief Whether the web dashboard is enabled, and which TCP port it listens on.
+    void set_dashboard_enabled(bool v) { m_dashboard_enabled = v; }
+    void set_dashboard_port(uint16_t port) { m_dashboard_port = port; }
+
     /// @brief Device-class string-table indices (registered in codegen). 0 = unset.
     /// Passed into configure_entity_() so Home Assistant renders the right
     /// semantics ("Connected"/"Disconnected", "Problem"/"OK").
@@ -198,11 +252,17 @@ private:
     /// reassigns addresses. Lets entities be rebuilt every boot without re-running
     /// the disruptive INITIALISE/RANDOMIZE address assignment.
     void create_entities_for_present_devices();
+    /// @brief Advance the non-blocking identify blink sequence, if one is active.
+    /// Called once per loop().
+    void process_identify_();
     void create_discovery_button();
     void create_reboot_button();
     void create_fade_numbers();
     /// @brief Create the 16 scene-recall buttons + scene-number + store/clear buttons.
     void create_scene_controls();
+    /// @brief Create the group-membership controls: target-address + group-number
+    /// selectors, and Add/Remove buttons.
+    void create_group_controls();
 
     /// @brief Fold one completed poll round's result into bus-health state. Marks the
     /// bus down after DALI_BUS_DOWN_ROUNDS all-NACK rounds; recovers on any response.
@@ -261,6 +321,35 @@ private:
     // Scene controls.
     bool m_expose_scenes = true;
     uint8_t m_selected_scene_ = 0;
+
+    // Group-membership controls (Add/Remove the target address to/from a group).
+    uint8_t m_group_target_addr_ = 0;
+    uint8_t m_group_number_ = 0;
+
+    // Per-device group membership cache (bit N set => device is in group N),
+    // populated during create_group_lights_() and kept up to date by
+    // add_to_group()/remove_from_group(). Read by the web dashboard.
+    uint16_t m_group_membership_[ADDR_SHORT_MAX+1] = {0};
+
+    // Non-blocking blink sequence for identify_lamp(), advanced from loop().
+    struct IdentifyState {
+        bool active = false;
+        uint8_t addr = 0;
+        uint8_t step = 0;
+        uint32_t next_at_ms = 0;
+        uint8_t original_level = 0;
+    } m_identify_;
+
+    // Web dashboard (lamps/groups/scenes). Only constructed if enabled. Starting
+    // AsyncWebServer::begin() before the network stack is up aborts (httpd_start
+    // hits an unmet FreeRTOS assertion), so the actual `begin()` call is deferred
+    // from setup() to the first loop() iteration where network::is_connected().
+    bool m_dashboard_enabled = false;
+    uint16_t m_dashboard_port = 8080;
+#ifdef DALI_WEB_DASHBOARD_ENABLED
+    DaliWebDashboard* m_dashboard_ = nullptr;
+    bool m_dashboard_started_ = false;
+#endif
 
     // Fade in/out times in milliseconds (runtime-adjustable via HA number entities).
     uint32_t m_fade_in_ms = 1000;

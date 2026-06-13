@@ -7,7 +7,7 @@ from esphome.core.entity_helpers import register_device_class
 import esphome.codegen as cg
 import esphome.config_validation as cv
 
-AUTO_LOAD = ["light", "output", "button", "number", "binary_sensor"]
+AUTO_LOAD = ["light", "output", "button", "number", "binary_sensor", "web_server_base", "json"]
 
 CONF_DALI_BUS = 'dali_bus'
 CONF_INITIALIZE_ADDRESSES = 'initialize_addresses'
@@ -26,6 +26,8 @@ CONF_PERSIST_INVENTORY = 'persist_inventory'
 CONF_EXPOSE_GROUPS = 'expose_groups'
 CONF_MAX_GROUPS = 'max_groups'
 CONF_EXPOSE_SCENES = 'expose_scenes'
+CONF_EXPOSE_DASHBOARD = 'expose_dashboard'
+CONF_DASHBOARD_PORT = 'dashboard_port'
 
 
 def _validate_dali_level(value):
@@ -50,6 +52,9 @@ DALI_MAX_GROUPS = 16
 # Scene controls: 16 recall buttons + store + clear = 18 buttons, and 1 scene-number.
 DALI_SCENE_BUTTON_COUNT = 18
 DALI_SCENE_NUMBER_COUNT = 1
+# Group-membership controls: Add + Remove buttons, and target-address + group-number.
+DALI_GROUP_BUTTON_COUNT = 2
+DALI_GROUP_NUMBER_COUNT = 2
 
 dali_ns = cg.esphome_ns.namespace('dali')
 dali_lib_ns = cg.global_ns
@@ -114,6 +119,10 @@ CONFIG_SCHEMA = cv.Schema({
     # Expose 16 "DALI Scene N" recall buttons plus a scene-number selector and
     # store/clear buttons (broadcast scene recall/store, scenes 0-15).
     cv.Optional(CONF_EXPOSE_SCENES, default=True): cv.boolean,
+    # Serve a small built-in web dashboard (lamp list/status, group assignment,
+    # scene recall/store/remove) on dashboard_port. ESP32 only.
+    cv.Optional(CONF_EXPOSE_DASHBOARD, default=False): cv.boolean,
+    cv.Optional(CONF_DASHBOARD_PORT, default=8080): cv.port,
     cv.Optional(CONF_INPUT_DEVICES, default=False): cv.boolean,
     cv.Optional(CONF_ON_INPUT_FRAME): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DaliInputFrameTrigger),
@@ -141,6 +150,8 @@ async def to_code(config: OrderedDict):
     cg.add(var.set_persist_inventory(config[CONF_PERSIST_INVENTORY]))
     cg.add(var.set_expose_groups(config[CONF_EXPOSE_GROUPS]))
     cg.add(var.set_expose_scenes(config[CONF_EXPOSE_SCENES]))
+    cg.add(var.set_dashboard_enabled(config[CONF_EXPOSE_DASHBOARD]))
+    cg.add(var.set_dashboard_port(config[CONF_DASHBOARD_PORT]))
 
     # Register the device-class strings our runtime-created diagnostic binary_sensors
     # use, so Home Assistant renders the proper semantics. configure_entity_() only
@@ -180,6 +191,11 @@ async def to_code(config: OrderedDict):
         for _ in range(DALI_SCENE_BUTTON_COUNT):
             CORE.register_platform_component("button", var)
 
+    # Group-membership controls add Add/Remove buttons. Reserve their button slots.
+    if config[CONF_EXPOSE_GROUPS]:
+        for _ in range(DALI_GROUP_BUTTON_COUNT):
+            CORE.register_platform_component("button", var)
+
     # Two auto-created number entities: "DALI Fade In Time" and "DALI Fade Out Time".
     # Reserve a slot for each in the fixed-capacity number StaticVector (see max_lights).
     for _ in range(DALI_DYNAMIC_NUMBER_COUNT):
@@ -188,6 +204,11 @@ async def to_code(config: OrderedDict):
     # Scene controls add a "DALI Scene Number" selector. Reserve its number slot.
     if config[CONF_EXPOSE_SCENES]:
         for _ in range(DALI_SCENE_NUMBER_COUNT):
+            CORE.register_platform_component("number", var)
+
+    # Group-membership controls add target-address + group-number selectors.
+    if config[CONF_EXPOSE_GROUPS]:
+        for _ in range(DALI_GROUP_NUMBER_COUNT):
             CORE.register_platform_component("number", var)
 
     if config.get(CONF_DISCOVERY, False):
