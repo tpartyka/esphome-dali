@@ -118,11 +118,6 @@ private:
     void create_reboot_button();
     void create_fade_numbers();
 
-    /// @brief One-shot RX diagnostic: logs the idle level, sends a single broadcast
-    /// QUERY CONTROL GEAR PRESENT, then captures the raw RX line transitions so we can
-    /// see whether (and when) devices actually answer, independent of polarity guesses.
-    void diagnose_rx();
-
     InternalGPIOPin* m_rxPin;
     GPIOPin* m_txPin;
 
@@ -140,7 +135,7 @@ private:
 
     // Lights (static + dynamic) we periodically poll so HA reflects external state.
     std::vector<DaliLight*> m_pollable_lights;
-    uint32_t m_state_poll_interval_ms = 5000;
+    uint32_t m_state_poll_interval_ms = 15000;
     uint32_t m_last_poll_ms = 0;
     size_t m_poll_index = 0;
 
