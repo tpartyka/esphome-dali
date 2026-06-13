@@ -960,42 +960,21 @@ DaliBusComponent::LampInfo DaliBusComponent::lamp_info(size_t index) const {
     return info;
 }
 
-binary_sensor::BinarySensor* DaliBusComponent::create_availability_sensor(short_addr_t short_addr) {
-#ifdef USE_BINARY_SENSOR
-    if (!m_expose_availability) return nullptr;
-
-    const int MAX_STR_LEN = 24;
-    char* name = new char[MAX_STR_LEN];
-    char* id = new char[MAX_STR_LEN];
-    snprintf(name, MAX_STR_LEN, "DALI Light %d Online", short_addr);
-    snprintf(id, MAX_STR_LEN, "dali_light_%d_online", short_addr);
-
-    auto* bs = new DaliDiagBinarySensor {};
-    bs->configure_dynamic_entity(name, id, m_dc_idx_connectivity);
-    App.register_binary_sensor(bs);
-    static_cast<AppRegistrationAccessor&>(App).register_component_(bs);
-    bs->publish_initial_state(true);  // assume online until a poll says otherwise
-    return bs;
-#else
-    return nullptr;
-#endif
-}
-
-binary_sensor::BinarySensor* DaliBusComponent::create_problem_sensor(short_addr_t short_addr) {
+binary_sensor::BinarySensor* DaliBusComponent::create_status_sensor(short_addr_t short_addr) {
 #ifdef USE_BINARY_SENSOR
     if (!m_expose_problem) return nullptr;
 
-    const int MAX_STR_LEN = 26;
+    const int MAX_STR_LEN = 25;
     char* name = new char[MAX_STR_LEN];
     char* id = new char[MAX_STR_LEN];
-    snprintf(name, MAX_STR_LEN, "DALI Light %d Problem", short_addr);
-    snprintf(id, MAX_STR_LEN, "dali_light_%d_problem", short_addr);
+    snprintf(name, MAX_STR_LEN, "DALI Light %d Status", short_addr);
+    snprintf(id, MAX_STR_LEN, "dali_light_%d_status", short_addr);
 
     auto* bs = new DaliDiagBinarySensor {};
     bs->configure_dynamic_entity(name, id, m_dc_idx_problem);
     App.register_binary_sensor(bs);
     static_cast<AppRegistrationAccessor&>(App).register_component_(bs);
-    bs->publish_initial_state(false);  // assume healthy until a poll reports a failure
+    bs->publish_initial_state(false);  // assume healthy/available until a poll says otherwise
     return bs;
 #else
     return nullptr;

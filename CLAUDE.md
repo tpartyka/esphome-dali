@@ -61,8 +61,8 @@ the C++ code might create at runtime, e.g.:
   `DALI_GROUP_BUTTON_COUNT` for auto-created buttons
 - `DALI_DYNAMIC_NUMBER_COUNT` / `DALI_SCENE_NUMBER_COUNT` /
   `DALI_GROUP_NUMBER_COUNT` for auto-created numbers
-- one slot per lamp per enabled diagnostic binary_sensor kind
-  (`expose_availability`, `expose_problem`), plus one for `expose_bus_status`
+- one slot per lamp for the "Status" diagnostic binary_sensor
+  (`expose_problem`), plus one for `expose_bus_status`
 
 If you add a new kind of runtime-created entity, add a matching `_COUNT`
 constant and `register_platform_component` call here, or it will be silently
@@ -89,8 +89,8 @@ collision rules. These helpers are unit-tested on the host in
 
 ### Reliability / error recovery
 
-`esphome_dali.cpp`/`.h` track per-lamp availability and problem state
-(`expose_availability`/`expose_problem`), a bus-online sensor
+`esphome_dali.cpp`/`.h` track per-lamp availability and problem state, exposed
+as a combined "Status" binary_sensor (`expose_problem`), a bus-online sensor
 (`expose_bus_status`), and persist the discovered address inventory to flash
 (`persist_inventory`) so entities survive reboots and brief bus outages.
 `power_on_level`/`system_failure_level` configure DALI-side recovery levels

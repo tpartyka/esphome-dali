@@ -111,14 +111,16 @@ class DaliLight : public light::LightOutput, public Component {
     light::LightState *state_{nullptr};
 
     // Availability tracking + recovery (set up in setup_state, driven by polling).
-    binary_sensor::BinarySensor *avail_sensor_{nullptr};
-    // Lamp/gear fault sensor, driven by the DALI STATUS lampFailure bit.
-    binary_sensor::BinarySensor *problem_sensor_{nullptr};
+    // Combined "Status" sensor: ON = unavailable or DALI STATUS lampFailure bit set.
+    binary_sensor::BinarySensor *status_sensor_{nullptr};
+    bool last_status_published_{false};
     uint8_t miss_count_{0};
     bool available_{true};
     bool problem_{false};
     bool recovery_config_done_{false};
     void apply_recovery_config_();
+    /// @brief Publish problem_ || !available_ to status_sensor_, if changed.
+    void publish_status_();
 
     uint8_t address_;
     optional<uint16_t> fade_time_;

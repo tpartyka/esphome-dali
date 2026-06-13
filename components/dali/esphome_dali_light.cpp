@@ -154,16 +154,15 @@ void dali::DaliLight::setup_state(light::LightState *state) {
         // can track availability and restore configuration if the device appears.
         this->state_ = state;
         bus->register_pollable_light(this);
-        this->avail_sensor_ = bus->create_availability_sensor(this->address_);
-        this->problem_sensor_ = bus->create_problem_sensor(this->address_);
+        this->status_sensor_ = bus->create_status_sensor(this->address_);
 
         if (this->available_) {
             // Apply power-failure recovery config now; polling re-applies it on each
             // unavailable->available transition thereafter.
             this->apply_recovery_config_();
             this->recovery_config_done_ = true;
-        } else if (this->avail_sensor_ != nullptr) {
-            this->avail_sensor_->publish_state(false);
+        } else {
+            this->publish_status_();
         }
     }
     else {
@@ -321,6 +320,14 @@ void dali::DaliLight::write_state(light::LightState *state) {
     }
 }
 
+void dali::DaliLight::publish_status_() {
+    if (this->status_sensor_ == nullptr) return;
+    bool status = this->problem_ || !this->available_;
+    if (status == this->last_status_published_) return;
+    this->last_status_published_ = status;
+    this->status_sensor_->publish_state(status);
+}
+
 void dali::DaliLight::apply_recovery_config_() {
     if ((this->address_ == ADDR_BROADCAST) || ((this->address_ & ADDR_GROUP_MASK) != 0)) return;
     uint8_t pol = bus->power_on_level();
@@ -343,7 +350,7 @@ bool dali::DaliLight::poll_and_publish() {
         if (this->available_ && this->miss_count_ >= DALI_AVAIL_MISS_THRESHOLD) {
             this->available_ = false;
             this->recovery_config_done_ = false;  // re-apply config when it returns
-            if (this->avail_sensor_ != nullptr) this->avail_sensor_->publish_state(false);
+            this->publish_status_();
             ESP_LOGW(TAG, "DALI[%d] not responding -> unavailable", this->address_);
         }
         return false;  // probed, no answer — hold last state, count against bus health
@@ -351,7 +358,7 @@ bool dali::DaliLight::poll_and_publish() {
     this->miss_count_ = 0;
     if (!this->available_) {
         this->available_ = true;
-        if (this->avail_sensor_ != nullptr) this->avail_sensor_->publish_state(true);
+        this->publish_status_();
         ESP_LOGI(TAG, "DALI[%d] responding again -> available", this->address_);
     }
     if (!this->recovery_config_done_) {
@@ -366,9 +373,9 @@ bool dali::DaliLight::poll_and_publish() {
     // Fault reporting (IEC 62386-102 STATUS bit 1 = lampFailure). Independent of
     // fade state, so publish it before the mid-fade early return below.
     bool problem = (status & STATUS_LAMP_FAILURE) != 0;
-    if (this->problem_sensor_ != nullptr && problem != this->problem_) {
+    if (problem != this->problem_) {
         this->problem_ = problem;
-        this->problem_sensor_->publish_state(problem);
+        this->publish_status_();
         ESP_LOGW(TAG, "DALI[%d] lamp failure -> %s", this->address_, problem ? "PROBLEM" : "OK");
     }
 

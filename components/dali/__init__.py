@@ -19,7 +19,6 @@ CONF_DEFAULT_FADE_IN_TIME = 'default_fade_in_time'
 CONF_DEFAULT_FADE_OUT_TIME = 'default_fade_out_time'
 CONF_POWER_ON_LEVEL = 'power_on_level'
 CONF_SYSTEM_FAILURE_LEVEL = 'system_failure_level'
-CONF_EXPOSE_AVAILABILITY = 'expose_availability'
 CONF_EXPOSE_PROBLEM = 'expose_problem'
 CONF_EXPOSE_BUS_STATUS = 'expose_bus_status'
 CONF_PERSIST_INVENTORY = 'persist_inventory'
@@ -100,10 +99,8 @@ CONFIG_SCHEMA = cv.Schema({
     # 'last' keeps the level from before the outage; 'off' = 0; or a raw 0..254.
     cv.Optional(CONF_POWER_ON_LEVEL, default='last'): _validate_dali_level,
     cv.Optional(CONF_SYSTEM_FAILURE_LEVEL, default='last'): _validate_dali_level,
-    # Create a diagnostic "online" binary_sensor per discovered lamp.
-    cv.Optional(CONF_EXPOSE_AVAILABILITY, default=True): cv.boolean,
-    # Create a diagnostic "problem" binary_sensor per discovered lamp, driven by
-    # the DALI STATUS lampFailure bit (IEC 62386-102).
+    # Create a diagnostic "Status" binary_sensor per discovered lamp: ON when the
+    # lamp is unavailable or reports the DALI STATUS lampFailure bit (IEC 62386-102).
     cv.Optional(CONF_EXPOSE_PROBLEM, default=True): cv.boolean,
     # Create a single "DALI Bus Online" connectivity sensor (bus-down detection).
     cv.Optional(CONF_EXPOSE_BUS_STATUS, default=True): cv.boolean,
@@ -144,7 +141,6 @@ async def to_code(config: OrderedDict):
     cg.add(var.set_fade_out_ms(config[CONF_DEFAULT_FADE_OUT_TIME]))
     cg.add(var.set_power_on_level(config[CONF_POWER_ON_LEVEL]))
     cg.add(var.set_system_failure_level(config[CONF_SYSTEM_FAILURE_LEVEL]))
-    cg.add(var.set_expose_availability(config[CONF_EXPOSE_AVAILABILITY]))
     cg.add(var.set_expose_problem(config[CONF_EXPOSE_PROBLEM]))
     cg.add(var.set_expose_bus_status(config[CONF_EXPOSE_BUS_STATUS]))
     cg.add(var.set_persist_inventory(config[CONF_PERSIST_INVENTORY]))
@@ -157,7 +153,7 @@ async def to_code(config: OrderedDict):
     # use, so Home Assistant renders the proper semantics. configure_entity_() only
     # honors the device-class index when USE_ENTITY_DEVICE_CLASS is defined; since we
     # create these entities in C++ (not from a YAML platform), define it here.
-    uses_connectivity = config[CONF_EXPOSE_AVAILABILITY] or config[CONF_EXPOSE_BUS_STATUS]
+    uses_connectivity = config[CONF_EXPOSE_BUS_STATUS]
     if uses_connectivity or config[CONF_EXPOSE_PROBLEM]:
         cg.add_define("USE_ENTITY_DEVICE_CLASS")
     if uses_connectivity:
@@ -167,10 +163,7 @@ async def to_code(config: OrderedDict):
 
     # Runtime-created binary_sensors need a reserved slot each in the fixed-capacity
     # StaticVector (same rule as lights/buttons/numbers — see max_lights): one per lamp
-    # for each enabled per-lamp kind ("online"/"problem"), plus one for the bus sensor.
-    if config[CONF_EXPOSE_AVAILABILITY]:
-        for _ in range(config[CONF_MAX_LIGHTS]):
-            CORE.register_platform_component("binary_sensor", var)
+    # for the "Status" sensor, plus one for the bus sensor.
     if config[CONF_EXPOSE_PROBLEM]:
         for _ in range(config[CONF_MAX_LIGHTS]):
             CORE.register_platform_component("binary_sensor", var)

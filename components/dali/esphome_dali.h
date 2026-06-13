@@ -108,12 +108,9 @@ public:
     uint8_t power_on_level() const { return m_power_on_level; }
     uint8_t system_failure_level() const { return m_system_failure_level; }
 
-    /// @brief Whether to create a per-lamp "online" binary_sensor.
-    void set_expose_availability(bool v) { m_expose_availability = v; }
-    bool expose_availability() const { return m_expose_availability; }
-
-    /// @brief Whether to create a per-lamp "problem" binary_sensor (driven by the
-    /// DALI STATUS lampFailure bit, IEC 62386-102).
+    /// @brief Whether to create a per-lamp "Status" binary_sensor (problem device
+    /// class: ON = lamp unavailable or reporting the DALI STATUS lampFailure bit,
+    /// IEC 62386-102; OFF = OK).
     void set_expose_problem(bool v) { m_expose_problem = v; }
     bool expose_problem() const { return m_expose_problem; }
 
@@ -203,13 +200,10 @@ public:
     void set_dc_index_connectivity(uint8_t idx) { m_dc_idx_connectivity = idx; }
     void set_dc_index_problem(uint8_t idx) { m_dc_idx_problem = idx; }
 
-    /// @brief Create + register a diagnostic "online" binary_sensor for a lamp.
-    /// Returns nullptr if availability sensors are disabled.
-    binary_sensor::BinarySensor* create_availability_sensor(short_addr_t short_addr);
-
-    /// @brief Create + register a diagnostic "problem" binary_sensor for a lamp
-    /// (lamp/gear failure). Returns nullptr if problem sensors are disabled.
-    binary_sensor::BinarySensor* create_problem_sensor(short_addr_t short_addr);
+    /// @brief Create + register a diagnostic "Status" binary_sensor for a lamp
+    /// (ON = unavailable or lamp/gear failure, OFF = OK). Returns nullptr if
+    /// status sensors are disabled.
+    binary_sensor::BinarySensor* create_status_sensor(short_addr_t short_addr);
 
     /// @brief Create + register the single "DALI Bus Online" connectivity sensor.
     void create_bus_sensor();
@@ -376,7 +370,6 @@ private:
     // power cut blasting lamps to full brightness).
     uint8_t m_power_on_level = 255;
     uint8_t m_system_failure_level = 255;
-    bool m_expose_availability = true;
     bool m_expose_problem = true;
     bool m_expose_bus_status = true;
 
