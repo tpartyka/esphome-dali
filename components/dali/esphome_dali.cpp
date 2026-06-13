@@ -91,8 +91,8 @@ public:
 
 protected:
     void control(float value) override {
-        if (this->is_out_) this->parent_->set_fade_out_s(value);
-        else               this->parent_->set_fade_in_s(value);
+        if (this->is_out_) this->parent_->set_fade_out_ms((uint32_t) value);
+        else               this->parent_->set_fade_in_ms((uint32_t) value);
         this->publish_state(value);
     }
 
@@ -459,18 +459,18 @@ void DaliBusComponent::create_reboot_button() {
 
 void DaliBusComponent::create_fade_numbers() {
 #ifdef USE_NUMBER
-    auto make = [this](const char* name, const char* id, bool is_out, float initial) {
+    auto make = [this](const char* name, const char* id, bool is_out, uint32_t initial) {
         auto* n = new DaliFadeNumber { this, is_out };
         n->traits.set_min_value(0.0f);
-        n->traits.set_max_value(16.0f);   // seconds; snapped to the nearest DALI step internally
-        n->traits.set_step(0.5f);
+        n->traits.set_max_value(16000.0f);  // ms; snapped to the nearest DALI step internally
+        n->traits.set_step(100.0f);
         n->configure_dynamic_entity(name, id);
         App.register_number(n);
         static_cast<AppRegistrationAccessor&>(App).register_component_(n);
-        n->publish_state(initial);
+        n->publish_state((float) initial);
     };
-    make("DALI Fade In Time", "dali_fade_in_time", false, m_fade_in_s);
-    make("DALI Fade Out Time", "dali_fade_out_time", true, m_fade_out_s);
+    make("DALI Fade In Time", "dali_fade_in_time", false, m_fade_in_ms);
+    make("DALI Fade Out Time", "dali_fade_out_time", true, m_fade_out_ms);
 
     DALI_LOGI("Created DALI fade in/out time numbers");
 #endif
