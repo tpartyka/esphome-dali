@@ -133,24 +133,42 @@ void dali::DaliLight::setup_state(light::LightState *state) {
             s_setup_instance = this;
             state->set_initial_state(initial_state_trampoline);
 
-            // Remember our LightState and register with the bus so it polls this
-            // device and reflects external state changes back to Home Assistant.
-            this->state_ = state;
-            bus->register_pollable_light(this);
-            this->avail_sensor_ = bus->create_availability_sensor(this->address_);
-
-            // Apply power-failure recovery config now (device is present), and let
-            // polling re-apply it whenever the device drops and recovers.
-            this->apply_recovery_config_();
-            this->recovery_config_done_ = true;
+            this->available_ = true;
+            this->miss_count_ = 0;
         }
         else {
-            ESP_LOGW(TAG, "DALI device at addr %.2x not found!", address_);
+            // Address known (e.g. restored from saved inventory) but not answering
+            // right now. Create the entity anyway so Home Assistant keeps it, using
+            // safe default level limits, and let polling flip it available + restore
+            // its recovery config when it reappears. This is the "missing" state.
+            ESP_LOGW(TAG, "DALI[%.2x] not present at setup; tracking as unavailable (missing)", address_);
+            this->dali_level_min_ = 1;
+            this->dali_level_max_ = 254;
+            this->dali_level_range_ = 254.0f;
+            this->available_ = false;
+            this->miss_count_ = DALI_AVAIL_MISS_THRESHOLD;
+            this->recovery_config_done_ = false;
         }
 
-        //bus->dali.dumpStatusForDevice(address_);
+        // Always register for polling + diagnostics, present or missing, so the bus
+        // can track availability and restore configuration if the device appears.
+        this->state_ = state;
+        bus->register_pollable_light(this);
+        this->avail_sensor_ = bus->create_availability_sensor(this->address_);
+        this->problem_sensor_ = bus->create_problem_sensor(this->address_);
+
+        if (this->available_) {
+            // Apply power-failure recovery config now; polling re-applies it on each
+            // unavailable->available transition thereafter.
+            this->apply_recovery_config_();
+            this->recovery_config_done_ = true;
+        } else if (this->avail_sensor_ != nullptr) {
+            this->avail_sensor_->publish_state(false);
+        }
     }
     else {
+        // Broadcast/group address: no per-device polling or capability detection.
+        this->state_ = state;
         // TODO: How do we detect color temperature support for broadcast and group addresses?
     }
 
@@ -268,12 +286,11 @@ void dali::DaliLight::apply_recovery_config_() {
     ESP_LOGD(TAG, "DALI[%d] applied recovery config (power-on=%u, sys-fail=%u)", this->address_, pol, sfl);
 }
 
-void dali::DaliLight::poll_and_publish() {
-    if (this->state_ == nullptr) return;
-
-    // Only individual short addresses can be queried; broadcast/group can't report a
-    // single state.
-    if ((this->address_ == ADDR_BROADCAST) || ((this->address_ & ADDR_GROUP_MASK) != 0)) return;
+bool dali::DaliLight::poll_and_publish() {
+    // Not individually pollable (no state object, or broadcast/group address): return
+    // true so it isn't counted as a NACK against bus health.
+    if (this->state_ == nullptr) return true;
+    if ((this->address_ == ADDR_BROADCAST) || ((this->address_ & ADDR_GROUP_MASK) != 0)) return true;
 
     // --- Availability -------------------------------------------------------
     bool present = bus->dali.isDevicePresent(this->address_);
@@ -285,7 +302,7 @@ void dali::DaliLight::poll_and_publish() {
             if (this->avail_sensor_ != nullptr) this->avail_sensor_->publish_state(false);
             ESP_LOGW(TAG, "DALI[%d] not responding -> unavailable", this->address_);
         }
-        return;  // hold the last published state; never publish a bogus "off"
+        return false;  // probed, no answer — hold last state, count against bus health
     }
     this->miss_count_ = 0;
     if (!this->available_) {
@@ -301,7 +318,17 @@ void dali::DaliLight::poll_and_publish() {
 
     // --- State --------------------------------------------------------------
     uint8_t status = bus->dali.lamp.getStatus(this->address_);
-    if (status & STATUS_FADE_STATE) return;  // mid-fade; don't publish an intermediate value
+
+    // Fault reporting (IEC 62386-102 STATUS bit 1 = lampFailure). Independent of
+    // fade state, so publish it before the mid-fade early return below.
+    bool problem = (status & STATUS_LAMP_FAILURE) != 0;
+    if (this->problem_sensor_ != nullptr && problem != this->problem_) {
+        this->problem_ = problem;
+        this->problem_sensor_->publish_state(problem);
+        ESP_LOGW(TAG, "DALI[%d] lamp failure -> %s", this->address_, problem ? "PROBLEM" : "OK");
+    }
+
+    if (status & STATUS_FADE_STATE) return true;  // mid-fade; don't publish an intermediate value
     bool on = (status & STATUS_LAMP_ON) != 0;
 
     // Start from the current published values so we preserve color temperature, then
@@ -324,10 +351,11 @@ void dali::DaliLight::poll_and_publish() {
     float db = cur.get_brightness() - v.get_brightness();
     if (db < 0) db = -db;
     bool changed = (cur.is_on() != v.is_on()) || (on && db > 0.02f);
-    if (!changed) return;
+    if (!changed) return true;
 
     this->state_->current_values = v;
     this->state_->remote_values = v;
     this->state_->publish_state();
     ESP_LOGD(TAG, "DALI[%d] external state -> %s", this->address_, on ? "ON" : "OFF");
+    return true;
 }

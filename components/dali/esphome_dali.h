@@ -6,6 +6,7 @@
 // <esphome.h> alone then fails with "expected class-name" on `public Component`.
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
+#include "esphome/core/preferences.h"
 #include "esphome/components/light/light_state.h"
 #include <esphome.h>
 #include <vector>
@@ -109,9 +110,54 @@ public:
     void set_expose_availability(bool v) { m_expose_availability = v; }
     bool expose_availability() const { return m_expose_availability; }
 
+    /// @brief Whether to create a per-lamp "problem" binary_sensor (driven by the
+    /// DALI STATUS lampFailure bit, IEC 62386-102).
+    void set_expose_problem(bool v) { m_expose_problem = v; }
+    bool expose_problem() const { return m_expose_problem; }
+
+    /// @brief Whether to create a single "DALI Bus Online" connectivity sensor that
+    /// goes off when no lamp answers for a few poll rounds (bus power lost / wiring).
+    void set_expose_bus_status(bool v) { m_expose_bus_status = v; }
+    bool expose_bus_status() const { return m_expose_bus_status; }
+
+    /// @brief Persist the discovered short-address inventory to flash, so on the next
+    /// boot the light entities exist immediately (even if the bus is momentarily down
+    /// at startup) and a device that was known but is now absent is tracked as a
+    /// "missing" (unavailable) lamp rather than silently vanishing.
+    void set_persist_inventory(bool v) { m_persist_inventory = v; }
+    bool persist_inventory() const { return m_persist_inventory; }
+
+    /// @brief Whether to auto-discover DALI group membership (QUERY GROUPS) and expose
+    /// one optimistic "DALI Group N" light per active group.
+    void set_expose_groups(bool v) { m_expose_groups = v; }
+    bool expose_groups() const { return m_expose_groups; }
+
+    /// @brief Whether to expose 16 "DALI Scene N" recall buttons + a scene number and
+    /// store/clear buttons.
+    void set_expose_scenes(bool v) { m_expose_scenes = v; }
+    bool expose_scenes() const { return m_expose_scenes; }
+
+    /// @brief Scene index (0..15) the Store/Clear scene buttons act on, set by the
+    /// "DALI Scene Number" entity.
+    void set_selected_scene(uint8_t s) { m_selected_scene_ = (s > 15) ? 15 : s; }
+    uint8_t selected_scene() const { return m_selected_scene_; }
+
+    /// @brief Device-class string-table indices (registered in codegen). 0 = unset.
+    /// Passed into configure_entity_() so Home Assistant renders the right
+    /// semantics ("Connected"/"Disconnected", "Problem"/"OK").
+    void set_dc_index_connectivity(uint8_t idx) { m_dc_idx_connectivity = idx; }
+    void set_dc_index_problem(uint8_t idx) { m_dc_idx_problem = idx; }
+
     /// @brief Create + register a diagnostic "online" binary_sensor for a lamp.
     /// Returns nullptr if availability sensors are disabled.
     binary_sensor::BinarySensor* create_availability_sensor(short_addr_t short_addr);
+
+    /// @brief Create + register a diagnostic "problem" binary_sensor for a lamp
+    /// (lamp/gear failure). Returns nullptr if problem sensors are disabled.
+    binary_sensor::BinarySensor* create_problem_sensor(short_addr_t short_addr);
+
+    /// @brief Create + register the single "DALI Bus Online" connectivity sensor.
+    void create_bus_sensor();
 
     /// @brief Register a light to be state-polled by the bus loop. Called by each
     /// DaliLight once it confirms a real (non-broadcast/group) device is present.
@@ -125,7 +171,7 @@ public:
 public: // DaliPort
     void resetBus() override;
     void sendForwardFrame(uint8_t address, uint8_t data) override;
-    uint8_t receiveBackwardFrame(unsigned long timeout_ms = 100) override;
+    uint8_t receiveBackwardFrame(unsigned long timeout_ms = DALI_BACKWARD_TIMEOUT_MS) override;
 
 private:
     void writeBit(bool bit);
@@ -142,6 +188,11 @@ private:
     }
 
     void create_light_component(short_addr_t short_addr, uint32_t long_addr);
+    /// @brief Create an optimistic "DALI Group N" light addressing (ADDR_GROUP | group).
+    void create_group_light_component(uint8_t group);
+    /// @brief Query group membership of every present device and create a group light
+    /// for each active group. present_mask: bit a set => short address a is present.
+    void create_group_lights_(uint64_t present_mask);
     /// @brief Non-destructively presence-scan addresses 0-63 and create a light
     /// entity for any device that doesn't already have one. Reads only; never
     /// reassigns addresses. Lets entities be rebuilt every boot without re-running
@@ -150,6 +201,22 @@ private:
     void create_discovery_button();
     void create_reboot_button();
     void create_fade_numbers();
+    /// @brief Create the 16 scene-recall buttons + scene-number + store/clear buttons.
+    void create_scene_controls();
+
+    /// @brief Fold one completed poll round's result into bus-health state. Marks the
+    /// bus down after DALI_BUS_DOWN_ROUNDS all-NACK rounds; recovers on any response.
+    void update_bus_health_(bool any_response);
+    /// @brief Re-sync after the bus comes back: rebuild any missing entities. Each
+    /// lamp re-applies its own recovery config on its unavailable->available edge.
+    void on_bus_recovered_();
+
+    /// @brief Load the persisted inventory bitmask and create a light entity for each
+    /// known short address (before discovery), so entities exist at API connect even
+    /// if the bus is momentarily unreachable at boot.
+    void restore_inventory_();
+    /// @brief Persist the set of short addresses currently present on the bus.
+    void save_inventory_(uint64_t present_mask);
 
     InternalGPIOPin* m_rxPin;
     GPIOPin* m_txPin;
@@ -172,6 +239,29 @@ private:
     uint32_t m_last_poll_ms = 0;
     size_t m_poll_index = 0;
 
+    // Bus-health tracking (phase 4). A poll "round" is one full pass over
+    // m_pollable_lights; if no lamp answers for a few consecutive rounds the bus is
+    // treated as down (power/wiring fault) and a single connectivity sensor reports it.
+    binary_sensor::BinarySensor* m_bus_sensor_ = nullptr;
+    bool m_bus_online_ = true;
+    bool m_round_any_response_ = false;
+    uint8_t m_bus_down_rounds_ = 0;
+
+    // Inventory persistence (phase 5): a 64-bit mask of known short addresses saved
+    // to flash so entities survive a boot where the bus is briefly unreachable, and
+    // removed lamps are tracked as "missing" rather than silently disappearing.
+    bool m_persist_inventory = true;
+    ESPPreferenceObject m_inventory_pref_;
+
+    // Group lights (auto-discovered). m_group_created_[g] guards against creating a
+    // "DALI Group g" light twice across discovery passes.
+    bool m_expose_groups = true;
+    bool m_group_created_[16] = { false };
+
+    // Scene controls.
+    bool m_expose_scenes = true;
+    uint8_t m_selected_scene_ = 0;
+
     // Fade in/out times in milliseconds (runtime-adjustable via HA number entities).
     uint32_t m_fade_in_ms = 1000;
     uint32_t m_fade_out_ms = 1000;
@@ -181,6 +271,12 @@ private:
     uint8_t m_power_on_level = 255;
     uint8_t m_system_failure_level = 255;
     bool m_expose_availability = true;
+    bool m_expose_problem = true;
+    bool m_expose_bus_status = true;
+
+    // Device-class string-table indices supplied by codegen (0 = unset).
+    uint8_t m_dc_idx_connectivity = 0;
+    uint8_t m_dc_idx_problem = 0;
 };
 
 }  // namespace dali

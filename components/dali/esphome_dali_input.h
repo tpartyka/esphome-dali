@@ -11,14 +11,37 @@
 // Polling in loop() is far too slow for 416us half-bits once WiFi/API are
 // active, which is why the master's RX pin must be interrupt-capable.
 //
-// Phase 1: capture + raw logging only. DALI-2 frames are 24 bits; we log the
-// raw value so the event format can be decoded once we see real devices.
+// Phase 2: capture + IEC 62386-103 event decode. The 24-bit forward frame is
+// decoded into source address / instance / event-info fields (and push-button
+// events per IEC 62386-301), surfaced on DaliInputFrame for the on_input_frame
+// automation. The exact addressing bit positions should be confirmed against a
+// real captured frame — see decode_part103_event() (single, isolated function).
 
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
 
 namespace esphome {
 namespace dali {
+
+// IEC 62386 instance types (control-device parts 3xx). Type 1 = push buttons (301).
+enum class DaliInstanceType : uint8_t {
+  PUSH_BUTTON      = 1,   ///< IEC 62386-301
+  ABSOLUTE_INPUT   = 2,   ///< IEC 62386-302 (sliders/dials)
+  OCCUPANCY        = 3,   ///< IEC 62386-303 (presence/motion)
+  LIGHT_SENSOR     = 4,   ///< IEC 62386-304
+};
+
+// Push-button events (IEC 62386-301), carried in the low bits of the event info.
+enum class DaliButtonEvent : int8_t {
+  NONE             = -1,
+  RELEASED         = 0,
+  PRESSED          = 1,
+  SHORT_PRESS      = 2,
+  DOUBLE_PRESS     = 3,
+  LONG_PRESS_START = 4,
+  LONG_PRESS_REPEAT= 5,
+  LONG_PRESS_STOP  = 6,
+};
 
 // DALI is 1200 baud, Manchester encoded: bit period 833us, half-bit 416us.
 static const uint32_t DALI_IN_HALF_BIT_US = 416;
@@ -27,12 +50,24 @@ static const uint32_t DALI_IN_TOLERANCE   = 180;   // +/-180us edge classificati
 // Idle for > 2 bit periods marks the end of a frame.
 static const uint32_t DALI_IN_EOF_US      = DALI_IN_BIT_US * 2 + DALI_IN_TOLERANCE;
 
-/// A raw decoded forward frame seen on the bus.
-/// Phase 2 will add decoded DALI-2 fields (address, instance type/number, event).
+/// A forward frame seen on the bus, with the IEC 62386-103 event fields decoded
+/// (valid only when is_event is true, i.e. a 24-bit control-device frame).
 struct DaliInputFrame {
-  uint32_t raw{0};    ///< raw data bits (LSB-aligned), up to 24 for DALI-2
-  uint8_t  bits{0};   ///< number of data bits captured (expect 16 or 24)
+  uint32_t raw{0};            ///< raw data bits (LSB-aligned), up to 24 for DALI-2
+  uint8_t  bits{0};           ///< number of data bits captured (16 = gear reply, 24 = event)
+
+  bool     is_event{false};   ///< true for a 24-bit control-device event frame
+  uint8_t  short_address{0xFF};   ///< source device short address 0..63, 0xFF = not short-addressed
+  uint8_t  instance_type{0xFF};   ///< DaliInstanceType (1 = push button), 0xFF = unknown
+  uint8_t  instance_number{0xFF}; ///< instance index within the device, 0xFF = unknown
+  uint16_t event_info{0};     ///< 10-bit event information field
+  int8_t   button_event{static_cast<int8_t>(DaliButtonEvent::NONE)};  ///< DaliButtonEvent or NONE
 };
+
+/// Decode a captured frame's IEC 62386-103 event fields in place (no-op unless 24-bit).
+void decode_part103_event(DaliInputFrame &f);
+/// Human-readable push-button event name (for logs / templates).
+const char *dali_button_event_name(int8_t ev);
 
 class DaliInputListener {
  public:
