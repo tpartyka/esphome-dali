@@ -48,6 +48,14 @@ class DaliLight : public light::LightOutput, public Component {
 
     uint8_t address() const { return address_; }
 
+    /// @brief Cached state accessors for the web dashboard (esphome_dali_web.*).
+    /// These are updated by poll_and_publish() / setup_state() and are safe to
+    /// read from the main loop task (do not call from another task/thread).
+    bool is_available() const { return available_; }
+    bool has_problem() const { return problem_; }
+    bool supports_color_temp() const { return tc_supported_; }
+    const light::LightColorValues& remote_values() const { return state_->remote_values; }
+
     void set_address(uint8_t address) { 
         address_ = address; 
 

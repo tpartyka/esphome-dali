@@ -1,6 +1,10 @@
 #include <esphome.h>
 #include <esp_task_wdt.h>
+#include <cmath>
 #include <cstring>
+#ifdef DALI_WEB_DASHBOARD_ENABLED
+#include "esphome/components/network/util.h"
+#endif
 #include "esphome_dali.h"
 #include "esphome_dali_light.h"
 #include "port.h"
@@ -134,6 +138,29 @@ protected:
     DaliBusComponent* parent_;
     bool clear_;
 };
+
+// Auto-created (no YAML) "Add to Group" / "Remove from Group" config buttons. They
+// act on the device selected by "DALI Group Target Address" and the group selected
+// by "DALI Group Number".
+class DaliGroupMembershipButton : public esphome::button::Button, public esphome::Component {
+public:
+    DaliGroupMembershipButton(DaliBusComponent* parent, bool add) : parent_(parent), add_(add) {}
+
+    void configure_dynamic_entity(const char* name, const char* object_id) {
+        uint32_t entity_fields =
+            (static_cast<uint32_t>(esphome::ENTITY_CATEGORY_CONFIG) << esphome::ENTITY_FIELD_ENTITY_CATEGORY_SHIFT);
+        this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), entity_fields);
+    }
+
+protected:
+    void press_action() override {
+        if (this->add_) this->parent_->add_target_to_group();
+        else             this->parent_->remove_target_from_group();
+    }
+
+    DaliBusComponent* parent_;
+    bool add_;
+};
 #endif  // USE_BUTTON
 
 #ifdef USE_NUMBER
@@ -181,6 +208,30 @@ protected:
 
     DaliBusComponent* parent_;
 };
+
+// Auto-created (no YAML) "DALI Group Target Address" (0..63) and "DALI Group Number"
+// (0..15) numbers, selecting which device and group the Add/Remove Group buttons
+// act on.
+class DaliGroupSelectNumber : public esphome::number::Number, public esphome::Component {
+public:
+    DaliGroupSelectNumber(DaliBusComponent* parent, bool is_group) : parent_(parent), is_group_(is_group) {}
+
+    void configure_dynamic_entity(const char* name, const char* object_id) {
+        uint32_t entity_fields =
+            (static_cast<uint32_t>(esphome::ENTITY_CATEGORY_CONFIG) << esphome::ENTITY_FIELD_ENTITY_CATEGORY_SHIFT);
+        this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), entity_fields);
+    }
+
+protected:
+    void control(float value) override {
+        if (this->is_group_) this->parent_->set_group_number((uint8_t) value);
+        else                 this->parent_->set_group_target_address((uint8_t) value);
+        this->publish_state(value);
+    }
+
+    DaliBusComponent* parent_;
+    bool is_group_;
+};
 #endif  // USE_NUMBER
 
 #ifdef USE_BINARY_SENSOR
@@ -222,6 +273,7 @@ void DaliBusComponent::setup() {
     create_reboot_button();
     create_fade_numbers();
     create_scene_controls();
+    create_group_controls();
     create_bus_sensor();
 
     // Passive input-device listener (Part 103 push buttons / sensors).
@@ -246,6 +298,20 @@ void DaliBusComponent::setup() {
     // The input listener needs loop() running even if discovery disabled it.
     if (m_input_devices) {
         this->enable_loop();
+    }
+
+    // Allocate the web dashboard, but defer AsyncWebServer::begin() to loop() --
+    // calling it this early (before the network stack is up) aborts inside
+    // httpd_start(). Force loop() on regardless of the decisions above, so the
+    // dashboard gets started and queued actions get drained even if discovery
+    // found nothing to poll.
+    if (m_dashboard_enabled) {
+#ifdef DALI_WEB_DASHBOARD_ENABLED
+        m_dashboard_ = new DaliWebDashboard {};
+        this->enable_loop();
+#else
+        DALI_LOGE("expose_dashboard is set but the web dashboard is only supported on ESP32");
+#endif
     }
 }
 
@@ -602,13 +668,16 @@ void DaliBusComponent::create_group_light_component(uint8_t group) {
 void DaliBusComponent::create_group_lights_(uint64_t present_mask) {
     if (!m_expose_groups) return;
 
-    // Union the group membership of every present device.
+    // Union the group membership of every present device, caching each device's
+    // membership for the web dashboard.
     uint16_t active_groups = 0;
     for (uint8_t addr = 0; addr <= ADDR_SHORT_MAX; addr++) {
         if (!(present_mask & (1ULL << addr))) continue;
         delay(1);  // yield to ESP stack
         esp_task_wdt_reset();
-        active_groups |= dali.scene.queryGroups(addr);
+        uint16_t groups = dali.scene.queryGroups(addr);
+        m_group_membership_[addr] = groups;
+        active_groups |= groups;
     }
 
     uint8_t created = 0;
@@ -705,6 +774,119 @@ void DaliBusComponent::create_scene_controls() {
 #endif
 }
 
+void DaliBusComponent::create_group_controls() {
+#if defined(USE_BUTTON) && defined(USE_NUMBER)
+    if (!m_expose_groups) return;
+
+    // Target device address selector (0..63).
+    auto* addr_num = new DaliGroupSelectNumber { this, /*is_group=*/false };
+    addr_num->traits.set_min_value(0.0f);
+    addr_num->traits.set_max_value((float) ADDR_SHORT_MAX);
+    addr_num->traits.set_step(1.0f);
+    addr_num->configure_dynamic_entity("DALI Group Target Address", "dali_group_target_address");
+    App.register_number(addr_num);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(addr_num);
+    addr_num->publish_state(0.0f);
+
+    // Target group selector (0..15).
+    auto* group_num = new DaliGroupSelectNumber { this, /*is_group=*/true };
+    group_num->traits.set_min_value(0.0f);
+    group_num->traits.set_max_value(15.0f);
+    group_num->traits.set_step(1.0f);
+    group_num->configure_dynamic_entity("DALI Group Number", "dali_group_number");
+    App.register_number(group_num);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(group_num);
+    group_num->publish_state(0.0f);
+
+    // Add/Remove buttons (act on the selected address + group).
+    auto* add_btn = new DaliGroupMembershipButton { this, /*add=*/true };
+    add_btn->configure_dynamic_entity("DALI Add To Group", "dali_group_add");
+    App.register_button(add_btn);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(add_btn);
+
+    auto* remove_btn = new DaliGroupMembershipButton { this, /*add=*/false };
+    remove_btn->configure_dynamic_entity("DALI Remove From Group", "dali_group_remove");
+    App.register_button(remove_btn);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(remove_btn);
+
+    DALI_LOGI("Created DALI group controls (target address + group number + add/remove)");
+#endif
+}
+
+void DaliBusComponent::add_to_group(uint8_t addr, uint8_t group) {
+    dali.scene.addToGroup(addr, group);
+    if (addr <= ADDR_SHORT_MAX) m_group_membership_[addr] |= (uint16_t) (1u << group);
+
+    // Make the group immediately controllable if this is its first member.
+    if (m_expose_groups && !m_group_created_[group]) {
+        m_group_created_[group] = true;
+        create_group_light_component(group);
+    }
+}
+
+void DaliBusComponent::remove_from_group(uint8_t addr, uint8_t group) {
+    dali.scene.removeFromGroup(addr, group);
+    if (addr <= ADDR_SHORT_MAX) m_group_membership_[addr] &= (uint16_t) ~(1u << group);
+}
+
+void DaliBusComponent::do_scene_action(uint8_t target_addr, uint8_t scene, SceneAction action) {
+    switch (action) {
+        case SceneAction::Recall: dali.scene.goToScene(target_addr, scene); break;
+        case SceneAction::Store:  dali.scene.storeScene(target_addr, scene); break;
+        case SceneAction::Remove: dali.scene.removeScene(target_addr, scene); break;
+    }
+}
+
+void DaliBusComponent::identify_lamp(uint8_t addr) {
+    if (addr > ADDR_SHORT_MAX) return;
+
+    // If a blink is already running (possibly for a different lamp), restore that
+    // lamp's brightness immediately before starting the new one.
+    if (m_identify_.active) {
+        dali.lamp.setBrightness(m_identify_.addr, m_identify_.original_level);
+    }
+
+    m_identify_.active = true;
+    m_identify_.addr = addr;
+    m_identify_.step = 0;
+    m_identify_.next_at_ms = millis();
+    m_identify_.original_level = dali.lamp.getCurrentLevel(addr);
+}
+
+void DaliBusComponent::process_identify_() {
+    if (!m_identify_.active) return;
+    if (millis() < m_identify_.next_at_ms) return;
+
+    // Blink a few times by alternating min/max brightness, then restore the
+    // lamp's original level.
+    constexpr uint8_t BLINKS = 3;
+    constexpr uint32_t STEP_MS = 400;
+    if (m_identify_.step < BLINKS * 2) {
+        uint8_t level = (m_identify_.step % 2 == 0) ? 254 : 0;
+        dali.lamp.setBrightness(m_identify_.addr, level);
+        m_identify_.step++;
+        m_identify_.next_at_ms = millis() + STEP_MS;
+    } else {
+        dali.lamp.setBrightness(m_identify_.addr, m_identify_.original_level);
+        m_identify_.active = false;
+    }
+}
+
+DaliBusComponent::LampInfo DaliBusComponent::lamp_info(size_t index) const {
+    const DaliLight* light = m_pollable_lights[index];
+    LampInfo info{};
+    info.addr = light->address();
+    info.online = light->is_available();
+    info.problem = light->has_problem();
+    const auto& rv = light->remote_values();
+    info.on = rv.is_on();
+    info.brightness_pct = (uint8_t) lroundf(rv.get_brightness() * 100.0f);
+    info.has_color_temp = light->supports_color_temp();
+    info.color_temp_mireds = info.has_color_temp ? (uint16_t) lroundf(rv.get_color_temperature()) : 0;
+    info.groups = (info.addr <= ADDR_SHORT_MAX) ? m_group_membership_[info.addr] : 0;
+    return info;
+}
+
 binary_sensor::BinarySensor* DaliBusComponent::create_availability_sensor(short_addr_t short_addr) {
 #ifdef USE_BINARY_SENSOR
     if (!m_expose_availability) return nullptr;
@@ -790,6 +972,20 @@ void DaliBusComponent::on_bus_recovered_() {
 }
 
 void DaliBusComponent::loop() {
+    process_identify_();
+#ifdef DALI_WEB_DASHBOARD_ENABLED
+    if (m_dashboard_ != nullptr) {
+        if (!m_dashboard_started_) {
+            if (network::is_connected()) {
+                m_dashboard_->begin(m_dashboard_port, this);
+                m_dashboard_started_ = true;
+                DALI_LOGI("DALI web dashboard listening on port %u", (unsigned) m_dashboard_port);
+            }
+        } else {
+            m_dashboard_->process_pending_actions();
+        }
+    }
+#endif
     if (m_input_devices) {
         m_input_listener.input_listener_loop();
     }
@@ -922,6 +1118,21 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
     ListenerSuppressGuard suppress(&m_input_listener, m_input_devices);
 
     unsigned long startTime = millis();
+
+    // A real backward frame can't start the instant we begin listening: per
+    // IEC 62386-101 a control gear's reply starts at least ~7 Te after the
+    // forward frame's stop condition, which is later than this point. If RX is
+    // already HIGH right now, the line is stuck/floating (e.g. DALI bus
+    // disconnected) rather than carrying a genuine start bit -- treat it as a
+    // NACK immediately instead of "reading" a phantom 0xFF reply, which would
+    // otherwise make isControlGearPresent()/compareSearchAddress() see a bus
+    // full of devices and send run_discovery() into a runaway loop.
+    if (m_rxPin->digital_read() == HIGH) {
+        if (DEBUG_LOG_RXTX) {
+            DALI_LOGD("RX: 00 (NACK, line stuck high)");
+        }
+        return 0;
+    }
 
     // Wait for the reply's START bit. Bounded by timeout_ms so a silent/stuck-idle bus
     // returns a NACK instead of spinning forever (see DALI_BACKWARD_TIMEOUT_MS).
