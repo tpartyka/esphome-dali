@@ -113,6 +113,15 @@ private:
     void writeByte(uint8_t b);
     uint8_t readByte();
 
+    /// @brief Return the lowest short address (0..63) not marked used, or 0xFF if
+    /// none are free. Used to assign new devices into address gaps.
+    short_addr_t lowest_free_address_(const bool* used) const {
+        for (uint8_t a = 0; a <= ADDR_SHORT_MAX; a++) {
+            if (!used[a]) return (short_addr_t) a;
+        }
+        return 0xFF;
+    }
+
     void create_light_component(short_addr_t short_addr, uint32_t long_addr);
     /// @brief Non-destructively presence-scan addresses 0-63 and create a light
     /// entity for any device that doesn't already have one. Reads only; never

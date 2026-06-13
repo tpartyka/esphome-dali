@@ -183,6 +183,20 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
         return; // Unlikely to get anything from discovery if no one responds to this
     }
 
+    // Map which short addresses are already in use *before* initialization, by
+    // probing the bus directly (addressed devices still answer normal queries).
+    // New devices are then assigned the lowest free address, so adding a lamp to
+    // an existing set never collides with an in-use address.
+    bool addr_used[ADDR_SHORT_MAX + 1] = { false };
+    if (mode != DaliInitMode::DiscoverOnly) {
+        DALI_LOGD("Mapping in-use short addresses...");
+        for (uint8_t a = 0; a <= ADDR_SHORT_MAX; a++) {
+            delay(1);
+            esp_task_wdt_reset();
+            if (dali.isDevicePresent(a)) addr_used[a] = true;
+        }
+    }
+
     if (mode != DaliInitMode::DiscoverOnly) {
         if (mode == DaliInitMode::InitializeAll) {
             DALI_LOGI("Randomizing addresses for *all* DALI devices");
@@ -215,11 +229,9 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
         is_discovered[i] = false;
     }
 
-    uint8_t count = 0;
     short_addr_t short_addr = 0xFF;
     uint32_t long_addr = 0;
     while (dali.bus_manager.findNextAddress(short_addr, long_addr)) {
-        count++;
         delay(1); // yield to ESP stack
         esp_task_wdt_reset();
 
@@ -233,9 +245,17 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
                     duplicate_detected = true;
                 }
                 else {
-                    // Assign a new address for this
-                    short_addr++;
-                    DALI_LOGD("  Duplicate short address detected, assigning a new address: %.2x", short_addr);
+                    // Duplicate: reassign this device to the lowest free address.
+                    short_addr_t free_addr = lowest_free_address_(addr_used);
+                    if (free_addr == 0xFF) {
+                        DALI_LOGE("  No free short address available (bus full)");
+                        dali.bus_manager.withdrawCurrentDevice();
+                        short_addr = 0xFF;
+                        continue;
+                    }
+                    short_addr = free_addr;
+                    addr_used[short_addr] = true;
+                    DALI_LOGD("  Duplicate short address detected, reassigning to: %.2x", short_addr);
 
                     if (!dali.bus_manager.programShortAddress(short_addr)) {
                         DALI_LOGE("  Could not program short address");
@@ -269,9 +289,17 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
                 continue;
             }
             else {
-                // count was already incremented at the top of the loop, so the
-                // first device gets short address 0.
-                short_addr = count - 1;
+                // Assign the lowest free short address, so new lamps slot into the
+                // gaps after any already-addressed devices instead of colliding.
+                short_addr_t free_addr = lowest_free_address_(addr_used);
+                if (free_addr == 0xFF) {
+                    DALI_LOGE("  No free short address available (bus full)");
+                    dali.bus_manager.withdrawCurrentDevice();
+                    short_addr = 0xFF;
+                    continue;
+                }
+                short_addr = free_addr;
+                addr_used[short_addr] = true;
                 DALI_LOGI("  Assigning short address: %.2x", short_addr);
 
                 if (!dali.bus_manager.programShortAddress(short_addr)) {
