@@ -27,6 +27,20 @@ public:
     using Application::register_component_;
 };
 
+// RAII guard that suppresses the passive input listener while the master drives the
+// bus (TX) or reads a reply (RX), and *always* un-suppresses on scope exit — even on
+// an early return — so a future code path can never leave the listener wedged off.
+struct ListenerSuppressGuard {
+    DaliInputListener* listener;
+    bool active;
+    ListenerSuppressGuard(DaliInputListener* l, bool active) : listener(l), active(active) {
+        if (active) listener->set_suppressed(true);
+    }
+    ~ListenerSuppressGuard() {
+        if (active) listener->set_suppressed(false);
+    }
+};
+
 class DynamicDaliLightState : public esphome::light::LightState {
 public:
     using esphome::light::LightState::LightState;
@@ -76,6 +90,50 @@ protected:
         esphome::App.safe_reboot();
     }
 };
+
+// Auto-created (no YAML) "DALI Scene N" button. Pressing it broadcasts GO TO SCENE N,
+// so every control gear fades to the level it has stored for that scene. GO TO SCENE
+// is a level command (sent once per IEC 62386-102), handled by sendControlCommand().
+class DaliSceneRecallButton : public esphome::button::Button, public esphome::Component {
+public:
+    DaliSceneRecallButton(DaliBusComponent* parent, uint8_t scene) : parent_(parent), scene_(scene) {}
+
+    void configure_dynamic_entity(const char* name, const char* object_id) {
+        this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), 0);
+    }
+
+protected:
+    void press_action() override {
+        this->parent_->dali.scene.goToScene(ADDR_BROADCAST, scene_);
+    }
+
+    DaliBusComponent* parent_;
+    uint8_t scene_;
+};
+
+// Auto-created (no YAML) "Store Current As Scene" / "Clear Scene" config buttons. They
+// act on the scene index selected by the "DALI Scene Number" entity, broadcast to all
+// gears: store snapshots each gear's current level into that scene; clear removes it.
+class DaliSceneEditButton : public esphome::button::Button, public esphome::Component {
+public:
+    DaliSceneEditButton(DaliBusComponent* parent, bool clear) : parent_(parent), clear_(clear) {}
+
+    void configure_dynamic_entity(const char* name, const char* object_id) {
+        uint32_t entity_fields =
+            (static_cast<uint32_t>(esphome::ENTITY_CATEGORY_CONFIG) << esphome::ENTITY_FIELD_ENTITY_CATEGORY_SHIFT);
+        this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), entity_fields);
+    }
+
+protected:
+    void press_action() override {
+        uint8_t scene = this->parent_->selected_scene();
+        if (this->clear_) this->parent_->dali.scene.removeScene(ADDR_BROADCAST, scene);
+        else              this->parent_->dali.scene.storeScene(ADDR_BROADCAST, scene);
+    }
+
+    DaliBusComponent* parent_;
+    bool clear_;
+};
 #endif  // USE_BUTTON
 
 #ifdef USE_NUMBER
@@ -102,16 +160,44 @@ protected:
     DaliBusComponent* parent_;
     bool is_out_;
 };
+
+// Auto-created (no YAML) "DALI Scene Number" (0..15) selecting which scene the Store /
+// Clear buttons act on. Just records the selection on the bus component.
+class DaliSceneNumber : public esphome::number::Number, public esphome::Component {
+public:
+    explicit DaliSceneNumber(DaliBusComponent* parent) : parent_(parent) {}
+
+    void configure_dynamic_entity(const char* name, const char* object_id) {
+        uint32_t entity_fields =
+            (static_cast<uint32_t>(esphome::ENTITY_CATEGORY_CONFIG) << esphome::ENTITY_FIELD_ENTITY_CATEGORY_SHIFT);
+        this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), entity_fields);
+    }
+
+protected:
+    void control(float value) override {
+        this->parent_->set_selected_scene((uint8_t) value);
+        this->publish_state(value);
+    }
+
+    DaliBusComponent* parent_;
+};
 #endif  // USE_NUMBER
 
 #ifdef USE_BINARY_SENSOR
-// Auto-created (no YAML) diagnostic "online" sensor per lamp. The bus publishes
-// true/false to it as the device responds / stops responding to polling.
-class DaliAvailabilitySensor : public esphome::binary_sensor::BinarySensor, public esphome::Component {
+// Auto-created (no YAML) diagnostic binary_sensor per lamp ("online", "problem").
+// The bus publishes to it from the state poller. The optional device-class index
+// (registered in codegen, see __init__.py) lets Home Assistant render the proper
+// semantics, e.g. connectivity -> "Connected"/"Disconnected", problem -> "Problem"/"OK".
+class DaliDiagBinarySensor : public esphome::binary_sensor::BinarySensor, public esphome::Component {
 public:
-    void configure_dynamic_entity(const char* name, const char* object_id) {
+    void configure_dynamic_entity(const char* name, const char* object_id, uint8_t device_class_index = 0) {
         uint32_t entity_fields =
             (static_cast<uint32_t>(esphome::ENTITY_CATEGORY_DIAGNOSTIC) << esphome::ENTITY_FIELD_ENTITY_CATEGORY_SHIFT);
+#ifdef USE_ENTITY_DEVICE_CLASS
+        entity_fields |= (static_cast<uint32_t>(device_class_index) << esphome::ENTITY_FIELD_DC_SHIFT);
+#else
+        (void) device_class_index;
+#endif
         this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), entity_fields);
     }
 };
@@ -135,6 +221,8 @@ void DaliBusComponent::setup() {
     create_discovery_button();
     create_reboot_button();
     create_fade_numbers();
+    create_scene_controls();
+    create_bus_sensor();
 
     // Passive input-device listener (Part 103 push buttons / sensors).
     if (m_input_devices) {
@@ -146,6 +234,9 @@ void DaliBusComponent::setup() {
     // (Running discovery later, e.g. via the button, won't surface NEW lights in HA
     // until the next reboot.)
     if (m_discovery) {
+        // Recreate entities for previously-known lamps first, so Home Assistant sees
+        // them at connect even if the bus is momentarily unreachable right now.
+        restore_inventory_();
         run_discovery();
     } else if (!m_input_devices) {
         // No discovery and no listener -> nothing for loop() to drive.
@@ -195,7 +286,9 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
         DALI_LOGD("Detected control gear on bus");
     } else {
         DALI_LOGE("No DALI control gear detected on bus!");
-        if (!m_input_devices) this->disable_loop();
+        // Keep loop() running if we have restored/static lights to poll (so the bus
+        // can be detected as recovered) or an input listener.
+        if (!m_input_devices && m_pollable_lights.empty()) this->disable_loop();
         return; // Unlikely to get anything from discovery if no one responds to this
     }
 
@@ -376,17 +469,55 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
 void DaliBusComponent::create_entities_for_present_devices() {
     DALI_LOGI("Scanning bus for addressed devices to create entities...");
     uint8_t created = 0;
+    uint64_t present_mask = 0;
     for (uint8_t addr = 0; addr <= ADDR_SHORT_MAX; addr++) {
         delay(1);  // yield to ESP stack
         esp_task_wdt_reset();
-        if (m_addresses[addr]) continue;  // already has an entity (discovery or static YAML)
-        if (dali.isDevicePresent(addr)) {
+        bool present = dali.isDevicePresent(addr);
+        if (present) present_mask |= (1ULL << addr);
+        if (m_addresses[addr]) continue;  // already has an entity (discovery, static YAML, or restored)
+        if (present) {
             m_addresses[addr] = 0xFFFFFF;  // mark created (long address unknown here)
             create_light_component(addr, 0xFFFFFF);
             created++;
         }
     }
     DALI_LOGI("Created %u light entit%s for already-addressed device(s)", created, created == 1 ? "y" : "ies");
+
+    // Persist the truly-present set: a device that's gone will not be pre-created on
+    // the next boot (it drops out of NVS), while one present now is restored instantly.
+    save_inventory_(present_mask);
+
+    // Auto-discover group membership and expose a light per active group.
+    create_group_lights_(present_mask);
+}
+
+void DaliBusComponent::restore_inventory_() {
+    if (!m_persist_inventory) return;
+    m_inventory_pref_ = global_preferences->make_preference<uint64_t>(0xDA111101u);
+    uint64_t mask = 0;
+    if (!m_inventory_pref_.load(&mask) || mask == 0) {
+        DALI_LOGD("No saved DALI inventory to restore");
+        return;
+    }
+    uint8_t restored = 0;
+    for (uint8_t addr = 0; addr <= ADDR_SHORT_MAX; addr++) {
+        if (!(mask & (1ULL << addr))) continue;
+        if (m_addresses[addr]) continue;  // already created (static YAML)
+        m_addresses[addr] = 0xFFFFFF;
+        create_light_component(addr, 0xFFFFFF);  // setup_state() tracks it as missing if absent now
+        restored++;
+    }
+    DALI_LOGI("Restored %u light entit%s from saved inventory", restored, restored == 1 ? "y" : "ies");
+}
+
+void DaliBusComponent::save_inventory_(uint64_t present_mask) {
+    if (!m_persist_inventory) return;
+    // make_preference may not have run yet if restore was skipped on first boot.
+    if (m_inventory_pref_.save(&present_mask)) {
+        DALI_LOGD("Saved DALI inventory mask 0x%08x%08x",
+                  (unsigned) (present_mask >> 32), (unsigned) (present_mask & 0xFFFFFFFF));
+    }
 }
 
 void DaliBusComponent::create_light_component(short_addr_t short_addr, uint32_t long_addr) {
@@ -432,6 +563,65 @@ void DaliBusComponent::create_light_component(short_addr_t short_addr, uint32_t 
 #endif
 }
 
+void DaliBusComponent::create_group_light_component(uint8_t group) {
+#ifdef USE_LIGHT
+    // Reuse DaliLight with a group address. setup_state() excludes group addresses from
+    // capability queries and polling, so the entity is optimistic (publishes what we
+    // command) — a DALI group has no single queryable state. write_state() sends the
+    // fade + DAPC level to (ADDR_GROUP | group), reaching every member.
+    DaliLight* gl = new DaliLight { this };
+    gl->set_address((short_addr_t) (ADDR_GROUP | (group & 0x0F)));
+
+    const int MAX_STR_LEN = 20;
+    char* name = new char[MAX_STR_LEN];
+    char* id = new char[MAX_STR_LEN];
+    snprintf(name, MAX_STR_LEN, "DALI Group %d", group);
+    snprintf(id, MAX_STR_LEN, "dali_group_%d", group);
+
+    auto* light_state = new DynamicDaliLightState { gl };
+    light_state->configure_dynamic_entity(name, id, false);
+    App.register_light(light_state);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(light_state);
+
+    light_state->set_restore_mode(light::LIGHT_RESTORE_DEFAULT_ON);
+    light_state->add_effects({});
+
+    gl->setup_state(light_state);
+
+    if (m_dynamic_lights.empty()) {
+        this->enable_loop();
+    }
+    m_dynamic_lights.push_back(light_state);
+
+    DALI_LOGI("Created group light component '%s' (%s)", name, id);
+#else
+    DALI_LOGE("Not compiled with light component.");
+#endif
+}
+
+void DaliBusComponent::create_group_lights_(uint64_t present_mask) {
+    if (!m_expose_groups) return;
+
+    // Union the group membership of every present device.
+    uint16_t active_groups = 0;
+    for (uint8_t addr = 0; addr <= ADDR_SHORT_MAX; addr++) {
+        if (!(present_mask & (1ULL << addr))) continue;
+        delay(1);  // yield to ESP stack
+        esp_task_wdt_reset();
+        active_groups |= dali.scene.queryGroups(addr);
+    }
+
+    uint8_t created = 0;
+    for (uint8_t g = 0; g < 16; g++) {
+        if (!(active_groups & (1u << g))) continue;
+        if (m_group_created_[g]) continue;  // already have a light for this group
+        m_group_created_[g] = true;
+        create_group_light_component(g);
+        created++;
+    }
+    DALI_LOGI("Created %u group light entit%s", created, created == 1 ? "y" : "ies");
+}
+
 void DaliBusComponent::create_discovery_button() {
 #ifdef USE_BUTTON
     auto* btn = new DaliDiscoveryButton { this };
@@ -473,6 +663,48 @@ void DaliBusComponent::create_fade_numbers() {
 #endif
 }
 
+void DaliBusComponent::create_scene_controls() {
+#if defined(USE_BUTTON) && defined(USE_NUMBER)
+    if (!m_expose_scenes) return;
+
+    // 16 broadcast scene-recall buttons.
+    const int MAX_STR_LEN = 18;
+    for (uint8_t s = 0; s < 16; s++) {
+        char* name = new char[MAX_STR_LEN];
+        char* id = new char[MAX_STR_LEN];
+        snprintf(name, MAX_STR_LEN, "DALI Scene %d", s);
+        snprintf(id, MAX_STR_LEN, "dali_scene_%d", s);
+        auto* btn = new DaliSceneRecallButton { this, s };
+        btn->configure_dynamic_entity(name, id);
+        App.register_button(btn);
+        static_cast<AppRegistrationAccessor&>(App).register_component_(btn);
+    }
+
+    // Scene index selector for the store/clear buttons.
+    auto* num = new DaliSceneNumber { this };
+    num->traits.set_min_value(0.0f);
+    num->traits.set_max_value(15.0f);
+    num->traits.set_step(1.0f);
+    num->configure_dynamic_entity("DALI Scene Number", "dali_scene_number");
+    App.register_number(num);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(num);
+    num->publish_state(0.0f);
+
+    // Store-current / clear buttons (act on the selected scene index, broadcast).
+    auto* store = new DaliSceneEditButton { this, false };
+    store->configure_dynamic_entity("DALI Store Current As Scene", "dali_scene_store");
+    App.register_button(store);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(store);
+
+    auto* clear = new DaliSceneEditButton { this, true };
+    clear->configure_dynamic_entity("DALI Clear Scene", "dali_scene_clear");
+    App.register_button(clear);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(clear);
+
+    DALI_LOGI("Created DALI scene controls (16 recall + number + store/clear)");
+#endif
+}
+
 binary_sensor::BinarySensor* DaliBusComponent::create_availability_sensor(short_addr_t short_addr) {
 #ifdef USE_BINARY_SENSOR
     if (!m_expose_availability) return nullptr;
@@ -483,8 +715,8 @@ binary_sensor::BinarySensor* DaliBusComponent::create_availability_sensor(short_
     snprintf(name, MAX_STR_LEN, "DALI Light %d Online", short_addr);
     snprintf(id, MAX_STR_LEN, "dali_light_%d_online", short_addr);
 
-    auto* bs = new DaliAvailabilitySensor {};
-    bs->configure_dynamic_entity(name, id);
+    auto* bs = new DaliDiagBinarySensor {};
+    bs->configure_dynamic_entity(name, id, m_dc_idx_connectivity);
     App.register_binary_sensor(bs);
     static_cast<AppRegistrationAccessor&>(App).register_component_(bs);
     bs->publish_initial_state(true);  // assume online until a poll says otherwise
@@ -492,6 +724,69 @@ binary_sensor::BinarySensor* DaliBusComponent::create_availability_sensor(short_
 #else
     return nullptr;
 #endif
+}
+
+binary_sensor::BinarySensor* DaliBusComponent::create_problem_sensor(short_addr_t short_addr) {
+#ifdef USE_BINARY_SENSOR
+    if (!m_expose_problem) return nullptr;
+
+    const int MAX_STR_LEN = 26;
+    char* name = new char[MAX_STR_LEN];
+    char* id = new char[MAX_STR_LEN];
+    snprintf(name, MAX_STR_LEN, "DALI Light %d Problem", short_addr);
+    snprintf(id, MAX_STR_LEN, "dali_light_%d_problem", short_addr);
+
+    auto* bs = new DaliDiagBinarySensor {};
+    bs->configure_dynamic_entity(name, id, m_dc_idx_problem);
+    App.register_binary_sensor(bs);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(bs);
+    bs->publish_initial_state(false);  // assume healthy until a poll reports a failure
+    return bs;
+#else
+    return nullptr;
+#endif
+}
+
+void DaliBusComponent::create_bus_sensor() {
+#ifdef USE_BINARY_SENSOR
+    if (!m_expose_bus_status) return;
+    auto* bs = new DaliDiagBinarySensor {};
+    bs->configure_dynamic_entity("DALI Bus Online", "dali_bus_online", m_dc_idx_connectivity);
+    App.register_binary_sensor(bs);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(bs);
+    bs->publish_initial_state(true);  // assume up until a few poll rounds say otherwise
+    m_bus_sensor_ = bs;
+#endif
+}
+
+// Bus-down detection thresholds.
+static const uint8_t  DALI_BUS_DOWN_ROUNDS = 2;        // consecutive all-NACK rounds -> down
+static const uint32_t DALI_BUS_DOWN_PROBE_MS = 5000;   // slow recovery probing while down
+
+void DaliBusComponent::update_bus_health_(bool any_response) {
+    if (any_response) {
+        m_bus_down_rounds_ = 0;
+        if (!m_bus_online_) {
+            m_bus_online_ = true;
+            if (m_bus_sensor_ != nullptr) m_bus_sensor_->publish_state(true);
+            DALI_LOGI("DALI bus recovered");
+            on_bus_recovered_();
+        }
+        return;
+    }
+    if (m_bus_down_rounds_ < 255) m_bus_down_rounds_++;
+    if (m_bus_online_ && m_bus_down_rounds_ >= DALI_BUS_DOWN_ROUNDS) {
+        m_bus_online_ = false;
+        if (m_bus_sensor_ != nullptr) m_bus_sensor_->publish_state(false);
+        DALI_LOGW("DALI bus down: no control gear answered for %u poll rounds", m_bus_down_rounds_);
+    }
+}
+
+void DaliBusComponent::on_bus_recovered_() {
+    // The bus came back (e.g. DALI PSU restored). Rebuild any entities for devices
+    // present but not yet created; each existing lamp re-applies its own recovery
+    // config on its individual unavailable->available transition during polling.
+    create_entities_for_present_devices();
 }
 
 void DaliBusComponent::loop() {
@@ -504,15 +799,33 @@ void DaliBusComponent::loop() {
 
     // Reflect external lamp changes (broadcast, other controllers) back into HA by
     // polling real device state. One device per tick, round-robin, so each is polled
-    // roughly every m_state_poll_interval_ms regardless of how many there are.
+    // roughly every m_state_poll_interval_ms regardless of how many there are. While
+    // the bus is marked down we probe slowly (DALI_BUS_DOWN_PROBE_MS) instead of
+    // hammering a dead bus, and recover as soon as any lamp answers again.
     if (m_state_poll_interval_ms > 0 && !m_pollable_lights.empty()) {
-        uint32_t per_tick = m_state_poll_interval_ms / m_pollable_lights.size();
-        if (per_tick < 50) per_tick = 50;  // floor: don't hammer the bus
+        uint32_t per_tick;
+        if (!m_bus_online_) {
+            per_tick = DALI_BUS_DOWN_PROBE_MS;
+        } else {
+            per_tick = m_state_poll_interval_ms / m_pollable_lights.size();
+            if (per_tick < 50) per_tick = 50;  // floor: don't hammer the bus
+        }
         uint32_t now = millis();
         if (now - m_last_poll_ms >= per_tick) {
             m_last_poll_ms = now;
-            if (m_poll_index >= m_pollable_lights.size()) m_poll_index = 0;
-            m_pollable_lights[m_poll_index]->poll_and_publish();
+            if (m_poll_index >= m_pollable_lights.size()) {
+                // A full round just completed — fold its result into bus health.
+                update_bus_health_(m_round_any_response_);
+                m_round_any_response_ = false;
+                m_poll_index = 0;
+            }
+            bool resp = m_pollable_lights[m_poll_index]->poll_and_publish();
+            if (resp) {
+                m_round_any_response_ = true;
+                // Recover immediately on the first answer rather than waiting for the
+                // round to finish (important during the slow bus-down probe cadence).
+                if (!m_bus_online_) update_bus_health_(true);
+            }
             m_poll_index++;
         }
     }
@@ -576,8 +889,8 @@ void DaliBusComponent::resetBus() {
 }
 
 void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
-    // Don't let the input listener decode our own transmission.
-    if (m_input_devices) m_input_listener.set_suppressed(true);
+    // Don't let the input listener decode our own transmission (un-suppressed on exit).
+    ListenerSuppressGuard suppress(&m_input_listener, m_input_devices);
 
     if (DEBUG_LOG_RXTX) {
         DALI_LOGD("TX: %02x %02x", address, data);
@@ -592,32 +905,31 @@ void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
         writeBit(1); // START bit
         writeByte(address);
         writeByte(data);
+        // Always leave the bus driven to idle (no half-finished frame on the wire).
         m_txPin->digital_write(LOW);
     }
 
     // Non critical delay
     delayMicroseconds(HALF_BIT_PERIOD*2);
     delayMicroseconds(BIT_PERIOD*4); // Optional, for clarity in scope trace
-
-    if (m_input_devices) m_input_listener.set_suppressed(false);
 }
 
 uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
     uint8_t data;
 
     // The backward frame is the device's response to us — not an input event.
-    if (m_input_devices) m_input_listener.set_suppressed(true);
+    // (Un-suppressed automatically on every return path by the guard.)
+    ListenerSuppressGuard suppress(&m_input_listener, m_input_devices);
 
     unsigned long startTime = millis();
 
-    // Wait for START bit (timing critical)
-    // TODO: Need a better way to wait for this that doesn't block the CPU
+    // Wait for the reply's START bit. Bounded by timeout_ms so a silent/stuck-idle bus
+    // returns a NACK instead of spinning forever (see DALI_BACKWARD_TIMEOUT_MS).
     while (m_rxPin->digital_read() == LOW) {
         if (millis() - startTime >= timeout_ms) {
             if (DEBUG_LOG_RXTX) {
                 DALI_LOGD("RX: 00 (NACK)");
             }
-            if (m_input_devices) m_input_listener.set_suppressed(false);
             return 0;
         }
     }
@@ -638,6 +950,5 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
 
     // Minimum time before we can send another forward frame
     delayMicroseconds(BIT_PERIOD*8);
-    if (m_input_devices) m_input_listener.set_suppressed(false);
     return data;
 }
