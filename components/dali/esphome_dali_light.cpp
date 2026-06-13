@@ -230,8 +230,6 @@ void dali::DaliLight::write_state(light::LightState *state) {
     float brightness;
     float color_temperature;
 
-    static uint16_t last_temperature = 0;
-
     state->current_values_as_binary(&on);
 
     // Apply the configured fade before the level command: fade-out when turning off,
@@ -256,8 +254,8 @@ void dali::DaliLight::write_state(light::LightState *state) {
         uint16_t dali_color_temperature = static_cast<uint16_t>(color_temperature_mired);
 
         // Only update if temperature has changed, to allow faster brightness changes
-        if (dali_color_temperature != last_temperature) {
-            last_temperature = dali_color_temperature;
+        if (dali_color_temperature != last_temperature_) {
+            last_temperature_ = dali_color_temperature;
 
             ESP_LOGD(TAG, "DALI[%d] Tc=%d", address_, dali_color_temperature);
 
