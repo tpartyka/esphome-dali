@@ -434,6 +434,21 @@ void DaliBusComponent::loop() {
     for (auto* light : m_dynamic_lights) {
         light->loop();
     }
+
+    // Reflect external lamp changes (broadcast, other controllers) back into HA by
+    // polling real device state. One device per tick, round-robin, so each is polled
+    // roughly every m_state_poll_interval_ms regardless of how many there are.
+    if (m_state_poll_interval_ms > 0 && !m_pollable_lights.empty()) {
+        uint32_t per_tick = m_state_poll_interval_ms / m_pollable_lights.size();
+        if (per_tick < 50) per_tick = 50;  // floor: don't hammer the bus
+        uint32_t now = millis();
+        if (now - m_last_poll_ms >= per_tick) {
+            m_last_poll_ms = now;
+            if (m_poll_index >= m_pollable_lights.size()) m_poll_index = 0;
+            m_pollable_lights[m_poll_index]->poll_and_publish();
+            m_poll_index++;
+        }
+    }
 }
 
 void DaliBusComponent::dump_config() {

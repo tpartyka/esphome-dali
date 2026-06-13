@@ -15,6 +15,8 @@
 namespace esphome {
 namespace dali {
 
+class DaliLight;  // forward decl: the bus keeps a list of lights to poll
+
 enum class DaliInitMode {
     DiscoverOnly,
     InitializeUnassigned,
@@ -79,6 +81,17 @@ public:
         }
     }
 
+    /// @brief How often (ms) to poll each lamp's real state so Home Assistant
+    /// reflects external changes. 0 disables polling.
+    void set_state_poll_interval(uint32_t ms) { m_state_poll_interval_ms = ms; }
+
+    /// @brief Register a light to be state-polled by the bus loop. Called by each
+    /// DaliLight once it confirms a real (non-broadcast/group) device is present.
+    void register_pollable_light(DaliLight* light) {
+        m_pollable_lights.push_back(light);
+        if (m_state_poll_interval_ms > 0) this->enable_loop();  // ensure loop() runs
+    }
+
     DaliMaster dali;
 
 public: // DaliPort
@@ -114,6 +127,12 @@ private:
     // Dynamic lights created during discovery are not in ESPHome's looping_components_
     // (that list is fixed at compile time). We drive their loop() manually.
     std::vector<light::LightState*> m_dynamic_lights;
+
+    // Lights (static + dynamic) we periodically poll so HA reflects external state.
+    std::vector<DaliLight*> m_pollable_lights;
+    uint32_t m_state_poll_interval_ms = 5000;
+    uint32_t m_last_poll_ms = 0;
+    size_t m_poll_index = 0;
 };
 
 }  // namespace dali

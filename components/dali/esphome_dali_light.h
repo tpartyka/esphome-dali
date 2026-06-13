@@ -38,6 +38,12 @@ class DaliLight : public light::LightOutput, public Component {
     void setup_state(light::LightState *state) override;
     void write_state(light::LightState *state) override;
 
+    /// @brief Query the lamp's real on/off + brightness over the bus and publish it
+    /// to Home Assistant, so external changes (broadcast, another controller) are
+    /// reflected. Uses publish_state(), which does NOT call write_state, so it never
+    /// re-drives the bus. No-op for broadcast/group addresses. Driven by the bus loop.
+    void poll_and_publish();
+
     void set_address(uint8_t address) { 
         address_ = address; 
 
@@ -66,6 +72,10 @@ class DaliLight : public light::LightOutput, public Component {
 
  protected:
     DaliBusComponent *bus;
+
+    // The LightState this output is bound to (captured in setup_state). Needed so
+    // polling can publish updated values back to Home Assistant.
+    light::LightState *state_{nullptr};
 
     uint8_t address_;
     optional<uint16_t> fade_time_;
