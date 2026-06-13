@@ -6,7 +6,7 @@ from esphome.core import CORE
 import esphome.codegen as cg
 import esphome.config_validation as cv
 
-AUTO_LOAD = ["light", "output", "button"]
+AUTO_LOAD = ["light", "output", "button", "number"]
 
 CONF_DALI_BUS = 'dali_bus'
 CONF_INITIALIZE_ADDRESSES = 'initialize_addresses'
@@ -14,12 +14,16 @@ CONF_INPUT_DEVICES = 'input_devices'
 CONF_ON_INPUT_FRAME = 'on_input_frame'
 CONF_MAX_LIGHTS = 'max_lights'
 CONF_STATE_POLL_INTERVAL = 'state_poll_interval'
+CONF_DEFAULT_FADE_IN_TIME = 'default_fade_in_time'
+CONF_DEFAULT_FADE_OUT_TIME = 'default_fade_out_time'
 
 # A DALI bus addresses up to 64 control gears (short addresses 0-63), so that is
 # the natural upper bound for lights discovered at runtime.
 DALI_MAX_SHORT_ADDRESSES = 64
 # We auto-create exactly two buttons (discovery + reboot) with no YAML.
 DALI_DYNAMIC_BUTTON_COUNT = 2
+# ...and two number entities (fade in + fade out time).
+DALI_DYNAMIC_NUMBER_COUNT = 2
 
 dali_ns = cg.esphome_ns.namespace('dali')
 dali_lib_ns = cg.global_ns
@@ -56,6 +60,10 @@ CONFIG_SCHEMA = cv.Schema({
     # How often to poll each lamp's real state so Home Assistant reflects changes
     # made outside ESPHome (broadcast commands, another controller). 0s disables it.
     cv.Optional(CONF_STATE_POLL_INTERVAL, default='5s'): cv.positive_time_period_milliseconds,
+    # Initial fade in/out times in seconds (also adjustable live via the HA
+    # "DALI Fade In/Out Time" number entities). Snapped to the nearest DALI step.
+    cv.Optional(CONF_DEFAULT_FADE_IN_TIME, default=1.0): cv.positive_float,
+    cv.Optional(CONF_DEFAULT_FADE_OUT_TIME, default=1.0): cv.positive_float,
     cv.Optional(CONF_INPUT_DEVICES, default=False): cv.boolean,
     cv.Optional(CONF_ON_INPUT_FRAME): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DaliInputFrameTrigger),
@@ -73,6 +81,8 @@ async def to_code(config: OrderedDict):
     cg.add(var.set_tx_pin(tx_pin))
 
     cg.add(var.set_state_poll_interval(config[CONF_STATE_POLL_INTERVAL]))
+    cg.add(var.set_fade_in_s(config[CONF_DEFAULT_FADE_IN_TIME]))
+    cg.add(var.set_fade_out_s(config[CONF_DEFAULT_FADE_OUT_TIME]))
 
     # The component auto-creates the "Run DALI Discovery" and "Reboot" buttons with
     # no YAML (see create_discovery_button / create_reboot_button). Each
@@ -82,6 +92,11 @@ async def to_code(config: OrderedDict):
     # the second (Reboot) is silently dropped and never appears in Home Assistant.
     for _ in range(DALI_DYNAMIC_BUTTON_COUNT):
         CORE.register_platform_component("button", var)
+
+    # Two auto-created number entities: "DALI Fade In Time" and "DALI Fade Out Time".
+    # Reserve a slot for each in the fixed-capacity number StaticVector (see max_lights).
+    for _ in range(DALI_DYNAMIC_NUMBER_COUNT):
+        CORE.register_platform_component("number", var)
 
     if config.get(CONF_DISCOVERY, False):
         cg.add(var.do_device_discovery())
