@@ -14,6 +14,16 @@ enum class DaliColorMode {
     COLOR_TEMPERATURE,
 };
 
+/// @brief Optimistic state update applied to a light's HA-published values
+/// without driving the bus, used to keep group member lamps (and a group
+/// light itself) in sync with a command sent to a group/broadcast address.
+/// Unset fields are left at their previously published value.
+struct GroupStateUpdate {
+    optional<bool> on;
+    optional<float> brightness;
+    optional<uint16_t> color_temp_mired;
+};
+
 class DaliLight : public light::LightOutput, public Component {
  public:
     DaliLight(DaliBusComponent* parent)
@@ -45,6 +55,17 @@ class DaliLight : public light::LightOutput, public Component {
     /// @return true if the device responded (or is not individually pollable, so it
     /// must not count against bus health); false if it was probed and did not answer.
     bool poll_and_publish();
+
+    /// @brief Apply an optimistic state update (from a group/broadcast command
+    /// sent to a different light) to this light's published state, without
+    /// driving the bus. Unset fields in `update` are left unchanged. No-op if
+    /// this light has no LightState yet.
+    void publish_optimistic_state(const GroupStateUpdate& update);
+
+    /// @brief This light's last-known color temperature in mireds, derived from
+    /// its published color_temperature (0..1) via this light's own coolest/warmest
+    /// mired range. Returns 0 if color temperature is not supported.
+    uint16_t current_color_temp_mired() const;
 
     uint8_t address() const { return address_; }
 

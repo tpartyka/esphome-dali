@@ -829,6 +829,14 @@ void DaliBusComponent::remove_from_group(uint8_t addr, uint8_t group) {
     if (addr <= ADDR_SHORT_MAX) m_group_membership_[addr] &= (uint16_t) ~(1u << group);
 }
 
+void DaliBusComponent::sync_group_member_states(uint8_t group, const GroupStateUpdate& update) {
+    uint16_t mask = (uint16_t) (1u << group);
+    for (DaliLight* light : m_pollable_lights) {
+        if ((m_group_membership_[light->address()] & mask) == 0) continue;
+        light->publish_optimistic_state(update);
+    }
+}
+
 void DaliBusComponent::do_scene_action(uint8_t target_addr, uint8_t scene, SceneAction action) {
     switch (action) {
         case SceneAction::Recall: dali.scene.goToScene(target_addr, scene); break;

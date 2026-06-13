@@ -21,6 +21,7 @@ namespace binary_sensor { class BinarySensor; }  // fwd: per-lamp availability s
 namespace dali {
 
 class DaliLight;  // forward decl: the bus keeps a list of lights to poll
+struct GroupStateUpdate;  // forward decl: optimistic state update for group member sync
 
 enum class DaliInitMode {
     DiscoverOnly,
@@ -219,6 +220,13 @@ public:
         m_pollable_lights.push_back(light);
         if (m_state_poll_interval_ms > 0) this->enable_loop();  // ensure loop() runs
     }
+
+    /// @brief Optimistically apply `update` to the HA-published state of every
+    /// individually-pollable lamp that is a member of `group` (0..15), per
+    /// m_group_membership_. Called when a "DALI Group N" light's write_state()
+    /// sends a command to the group address, so member lamps' entities reflect
+    /// the change immediately instead of waiting for their next poll.
+    void sync_group_member_states(uint8_t group, const GroupStateUpdate& update);
 
     DaliMaster dali;
 

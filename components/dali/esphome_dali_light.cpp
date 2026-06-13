@@ -225,6 +225,34 @@ light::LightTraits dali::DaliLight::get_traits() {
     return traits;
 }
 
+uint16_t dali::DaliLight::current_color_temp_mired() const {
+    if (!tc_supported_ || this->state_ == nullptr) return 0;
+    float color_temperature = this->state_->remote_values.get_color_temperature();
+    float mired = (color_temperature * (dali_tc_warmest_ - dali_tc_coolest_)) + dali_tc_coolest_;
+    return static_cast<uint16_t>(mired);
+}
+
+void dali::DaliLight::publish_optimistic_state(const GroupStateUpdate& update) {
+    if (this->state_ == nullptr) return;
+
+    LightColorValues v = this->state_->remote_values;
+    if (update.on.has_value()) v.set_state(update.on.value());
+    if (update.brightness.has_value()) v.set_brightness(update.brightness.value());
+    if (update.color_temp_mired.has_value() && tc_supported_) {
+        float color_temperature = (update.color_temp_mired.value() - dali_tc_coolest_) / (dali_tc_warmest_ - dali_tc_coolest_);
+        if (color_temperature < 0.0f) color_temperature = 0.0f;
+        if (color_temperature > 1.0f) color_temperature = 1.0f;
+        v.set_color_temperature(color_temperature);
+        // Keep our own change-suppression in write_state() in sync with the value
+        // we're now reporting, so a subsequent identical command isn't skipped.
+        this->last_temperature_ = update.color_temp_mired.value();
+    }
+
+    this->state_->current_values = v;
+    this->state_->remote_values = v;
+    this->state_->publish_state();
+}
+
 void dali::DaliLight::write_state(light::LightState *state) {
     bool on;
     float brightness;
@@ -241,6 +269,15 @@ void dali::DaliLight::write_state(light::LightState *state) {
         // Short cut: send power off command
         //bus->dali.lamp.turnOff(address_); // no fade
         bus->dali.lamp.setBrightness(address_, 0); // fade
+
+        // A group/broadcast command reaches its members on the bus instantly, but
+        // their individual HA entities only learn of it on the next poll cycle.
+        // Optimistically reflect the new state now so HA stays in sync.
+        if ((address_ & ADDR_GROUP_MASK) != 0) {
+            GroupStateUpdate update;
+            update.on = false;
+            bus->sync_group_member_states(address_ & 0x0F, update);
+        }
         return;
     }
 
@@ -273,6 +310,15 @@ void dali::DaliLight::write_state(light::LightState *state) {
 
     ESP_LOGD(TAG, "DALI[%d] B=%.2f (%d)", address_, brightness, dali_brightness);
     bus->dali.lamp.setBrightness(address_, (uint8_t)dali_brightness);
+
+    // See comment above: optimistically sync group commands to member lamps.
+    if ((address_ & ADDR_GROUP_MASK) != 0) {
+        GroupStateUpdate update;
+        update.on = true;
+        update.brightness = brightness;
+        if (tc_supported_) update.color_temp_mired = static_cast<uint16_t>(color_temperature * (dali_tc_warmest_ - dali_tc_coolest_) + dali_tc_coolest_);
+        bus->sync_group_member_states(address_ & 0x0F, update);
+    }
 }
 
 void dali::DaliLight::apply_recovery_config_() {
