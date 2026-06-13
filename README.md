@@ -70,8 +70,7 @@ dali:
 | `default_fade_out_time` | time | `1s` | Initial fade time used when turning a light off or decreasing brightness. Adjustable live via the "DALI Fade Out Time" number entity. |
 | `power_on_level` | `last` \| `off` \| `0`-`254` | `last` | Level a lamp returns to when mains power returns after an outage (DALI `POWER ON LEVEL`). `last` keeps the level from before the outage. |
 | `system_failure_level` | `last` \| `off` \| `0`-`254` | `last` | Level a lamp goes to if it loses DALI bus communication (DALI `SYSTEM FAILURE LEVEL`). |
-| `expose_availability` | bool | `true` | Create a diagnostic "online" `binary_sensor` per discovered lamp. |
-| `expose_problem` | bool | `true` | Create a diagnostic "problem" `binary_sensor` per discovered lamp, driven by the DALI `STATUS` lamp-failure bit. |
+| `expose_problem` | bool | `true` | Create a diagnostic "Status" `binary_sensor` per discovered lamp: ON when the lamp is unavailable or reports the DALI `STATUS` lamp-failure bit, OFF when OK. |
 | `expose_bus_status` | bool | `true` | Create a single "DALI Bus Online" connectivity `binary_sensor` reflecting whether the bus itself is responding. |
 | `persist_inventory` | bool | `true` | Persist the discovered short-address inventory to flash, so lamp entities exist at boot (as "unavailable" if missing) even before the bus has been re-polled. Only used when `discovery` is enabled. |
 | `expose_groups` | bool | `true` | Auto-discover DALI group membership and expose one optimistic "DALI Group N" light per active group. Only used when `discovery` is enabled. |
@@ -136,9 +135,9 @@ bus polling/discovery.
 
 ## Reliability & Recovery
 
-- **Availability & problem sensors** (`expose_availability`, `expose_problem`):
-  each discovered lamp gets diagnostic "online" and "problem" binary_sensors,
-  the latter driven by the DALI STATUS `lampFailure` bit.
+- **Status sensor** (`expose_problem`): each discovered lamp gets a diagnostic
+  "Status" binary_sensor that turns on when the lamp is unavailable or reports
+  the DALI STATUS `lampFailure` bit, and off when OK.
 - **Bus status** (`expose_bus_status`): a single "DALI Bus Online" connectivity
   sensor reflects whether the DALI bus itself is responding.
 - **Persisted inventory** (`persist_inventory`): the discovered short-address
