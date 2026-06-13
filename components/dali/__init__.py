@@ -2,11 +2,12 @@ from typing import OrderedDict
 from esphome import automation, pins
 from esphome.const import CONF_ID, CONF_RX_PIN, CONF_TX_PIN, CONF_DISCOVERY, CONF_TRIGGER_ID
 from esphome.core import CORE
+from esphome.core.entity_helpers import register_device_class
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
 
-AUTO_LOAD = ["light", "output", "button", "number", "binary_sensor"]
+AUTO_LOAD = ["light", "output", "button", "number", "binary_sensor", "web_server_base", "json"]
 
 CONF_DALI_BUS = 'dali_bus'
 CONF_INITIALIZE_ADDRESSES = 'initialize_addresses'
@@ -19,6 +20,14 @@ CONF_DEFAULT_FADE_OUT_TIME = 'default_fade_out_time'
 CONF_POWER_ON_LEVEL = 'power_on_level'
 CONF_SYSTEM_FAILURE_LEVEL = 'system_failure_level'
 CONF_EXPOSE_AVAILABILITY = 'expose_availability'
+CONF_EXPOSE_PROBLEM = 'expose_problem'
+CONF_EXPOSE_BUS_STATUS = 'expose_bus_status'
+CONF_PERSIST_INVENTORY = 'persist_inventory'
+CONF_EXPOSE_GROUPS = 'expose_groups'
+CONF_MAX_GROUPS = 'max_groups'
+CONF_EXPOSE_SCENES = 'expose_scenes'
+CONF_EXPOSE_DASHBOARD = 'expose_dashboard'
+CONF_DASHBOARD_PORT = 'dashboard_port'
 
 
 def _validate_dali_level(value):
@@ -38,6 +47,14 @@ DALI_MAX_SHORT_ADDRESSES = 64
 DALI_DYNAMIC_BUTTON_COUNT = 2
 # ...and two number entities (fade in + fade out time).
 DALI_DYNAMIC_NUMBER_COUNT = 2
+# A DALI bus has 16 groups (0-15), the upper bound for auto-discovered group lights.
+DALI_MAX_GROUPS = 16
+# Scene controls: 16 recall buttons + store + clear = 18 buttons, and 1 scene-number.
+DALI_SCENE_BUTTON_COUNT = 18
+DALI_SCENE_NUMBER_COUNT = 1
+# Group-membership controls: Add + Remove buttons, and target-address + group-number.
+DALI_GROUP_BUTTON_COUNT = 2
+DALI_GROUP_NUMBER_COUNT = 2
 
 dali_ns = cg.esphome_ns.namespace('dali')
 dali_lib_ns = cg.global_ns
@@ -85,6 +102,27 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_SYSTEM_FAILURE_LEVEL, default='last'): _validate_dali_level,
     # Create a diagnostic "online" binary_sensor per discovered lamp.
     cv.Optional(CONF_EXPOSE_AVAILABILITY, default=True): cv.boolean,
+    # Create a diagnostic "problem" binary_sensor per discovered lamp, driven by
+    # the DALI STATUS lampFailure bit (IEC 62386-102).
+    cv.Optional(CONF_EXPOSE_PROBLEM, default=True): cv.boolean,
+    # Create a single "DALI Bus Online" connectivity sensor (bus-down detection).
+    cv.Optional(CONF_EXPOSE_BUS_STATUS, default=True): cv.boolean,
+    # Persist the discovered short-address inventory to flash, so lamp entities exist
+    # at boot even if the bus is briefly unreachable, and removed lamps are tracked as
+    # "missing" (unavailable) instead of vanishing. Only used when discovery is on.
+    cv.Optional(CONF_PERSIST_INVENTORY, default=True): cv.boolean,
+    # Auto-discover DALI group membership (QUERY GROUPS) and expose one optimistic
+    # "DALI Group N" light per active group. Only used when discovery is on.
+    cv.Optional(CONF_EXPOSE_GROUPS, default=True): cv.boolean,
+    cv.Optional(CONF_MAX_GROUPS, default=DALI_MAX_GROUPS):
+        cv.int_range(min=1, max=DALI_MAX_GROUPS),
+    # Expose 16 "DALI Scene N" recall buttons plus a scene-number selector and
+    # store/clear buttons (broadcast scene recall/store, scenes 0-15).
+    cv.Optional(CONF_EXPOSE_SCENES, default=True): cv.boolean,
+    # Serve a small built-in web dashboard (lamp list/status, group assignment,
+    # scene recall/store/remove) on dashboard_port. ESP32 only.
+    cv.Optional(CONF_EXPOSE_DASHBOARD, default=False): cv.boolean,
+    cv.Optional(CONF_DASHBOARD_PORT, default=8080): cv.port,
     cv.Optional(CONF_INPUT_DEVICES, default=False): cv.boolean,
     cv.Optional(CONF_ON_INPUT_FRAME): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DaliInputFrameTrigger),
@@ -107,13 +145,37 @@ async def to_code(config: OrderedDict):
     cg.add(var.set_power_on_level(config[CONF_POWER_ON_LEVEL]))
     cg.add(var.set_system_failure_level(config[CONF_SYSTEM_FAILURE_LEVEL]))
     cg.add(var.set_expose_availability(config[CONF_EXPOSE_AVAILABILITY]))
+    cg.add(var.set_expose_problem(config[CONF_EXPOSE_PROBLEM]))
+    cg.add(var.set_expose_bus_status(config[CONF_EXPOSE_BUS_STATUS]))
+    cg.add(var.set_persist_inventory(config[CONF_PERSIST_INVENTORY]))
+    cg.add(var.set_expose_groups(config[CONF_EXPOSE_GROUPS]))
+    cg.add(var.set_expose_scenes(config[CONF_EXPOSE_SCENES]))
+    cg.add(var.set_dashboard_enabled(config[CONF_EXPOSE_DASHBOARD]))
+    cg.add(var.set_dashboard_port(config[CONF_DASHBOARD_PORT]))
 
-    # Per-lamp "online" binary_sensors are created at runtime; reserve a slot for
-    # each possible lamp in the fixed-capacity binary_sensor StaticVector (same
-    # rule as lights/buttons/numbers — see max_lights).
+    # Register the device-class strings our runtime-created diagnostic binary_sensors
+    # use, so Home Assistant renders the proper semantics. configure_entity_() only
+    # honors the device-class index when USE_ENTITY_DEVICE_CLASS is defined; since we
+    # create these entities in C++ (not from a YAML platform), define it here.
+    uses_connectivity = config[CONF_EXPOSE_AVAILABILITY] or config[CONF_EXPOSE_BUS_STATUS]
+    if uses_connectivity or config[CONF_EXPOSE_PROBLEM]:
+        cg.add_define("USE_ENTITY_DEVICE_CLASS")
+    if uses_connectivity:
+        cg.add(var.set_dc_index_connectivity(register_device_class("connectivity")))
+    if config[CONF_EXPOSE_PROBLEM]:
+        cg.add(var.set_dc_index_problem(register_device_class("problem")))
+
+    # Runtime-created binary_sensors need a reserved slot each in the fixed-capacity
+    # StaticVector (same rule as lights/buttons/numbers — see max_lights): one per lamp
+    # for each enabled per-lamp kind ("online"/"problem"), plus one for the bus sensor.
     if config[CONF_EXPOSE_AVAILABILITY]:
         for _ in range(config[CONF_MAX_LIGHTS]):
             CORE.register_platform_component("binary_sensor", var)
+    if config[CONF_EXPOSE_PROBLEM]:
+        for _ in range(config[CONF_MAX_LIGHTS]):
+            CORE.register_platform_component("binary_sensor", var)
+    if config[CONF_EXPOSE_BUS_STATUS]:
+        CORE.register_platform_component("binary_sensor", var)
 
     # The component auto-creates the "Run DALI Discovery" and "Reboot" buttons with
     # no YAML (see create_discovery_button / create_reboot_button). Each
@@ -124,10 +186,30 @@ async def to_code(config: OrderedDict):
     for _ in range(DALI_DYNAMIC_BUTTON_COUNT):
         CORE.register_platform_component("button", var)
 
+    # Scene controls add 16 recall buttons + store + clear. Reserve their button slots.
+    if config[CONF_EXPOSE_SCENES]:
+        for _ in range(DALI_SCENE_BUTTON_COUNT):
+            CORE.register_platform_component("button", var)
+
+    # Group-membership controls add Add/Remove buttons. Reserve their button slots.
+    if config[CONF_EXPOSE_GROUPS]:
+        for _ in range(DALI_GROUP_BUTTON_COUNT):
+            CORE.register_platform_component("button", var)
+
     # Two auto-created number entities: "DALI Fade In Time" and "DALI Fade Out Time".
     # Reserve a slot for each in the fixed-capacity number StaticVector (see max_lights).
     for _ in range(DALI_DYNAMIC_NUMBER_COUNT):
         CORE.register_platform_component("number", var)
+
+    # Scene controls add a "DALI Scene Number" selector. Reserve its number slot.
+    if config[CONF_EXPOSE_SCENES]:
+        for _ in range(DALI_SCENE_NUMBER_COUNT):
+            CORE.register_platform_component("number", var)
+
+    # Group-membership controls add target-address + group-number selectors.
+    if config[CONF_EXPOSE_GROUPS]:
+        for _ in range(DALI_GROUP_NUMBER_COUNT):
+            CORE.register_platform_component("number", var)
 
     if config.get(CONF_DISCOVERY, False):
         cg.add(var.do_device_discovery())
@@ -139,6 +221,12 @@ async def to_code(config: OrderedDict):
         # USE_LIGHT so the light code compiles in even with no YAML `light:` block.
         for _ in range(config[CONF_MAX_LIGHTS]):
             CORE.register_platform_component("light", bus)
+
+        # Auto-discovered group lights are additional light entities — reserve a slot
+        # for each possible group on top of the per-lamp lights.
+        if config[CONF_EXPOSE_GROUPS]:
+            for _ in range(config[CONF_MAX_GROUPS]):
+                CORE.register_platform_component("light", bus)
 
     init_mode = config[CONF_INITIALIZE_ADDRESSES]
     if init_mode != 'none':

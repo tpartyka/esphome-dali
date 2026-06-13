@@ -118,13 +118,19 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
         }
     }
 
-    if (addr == 0xFFFFFF || addr == 0x000000) {
-        return false; // No more devices found
-    }
-
     // Final step in the search, set last bit if no longer matching
     if (!compareSearchAddress(addr)) {
         addr++;
+    }
+
+    // addr can only overflow past 0xFFFFFF here if no device matches at all
+    // (the loop converged to 0xFFFFFF and compareSearchAddress(0xFFFFFF) was
+    // false), which the caller's initial compareSearchAddress(0xFFFFFF) check
+    // should already have ruled out. Note: addr==0 and addr==0xFFFFFF are
+    // both valid 24-bit random addresses and must not be treated as "no
+    // device found" here.
+    if (addr > 0xFFFFFF) {
+        return false; // No more devices found
     }
 
     // Sanity check: Address should still return true for comparison

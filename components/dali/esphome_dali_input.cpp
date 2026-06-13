@@ -6,6 +6,55 @@ namespace dali {
 
 static const char *const TAG = "dali.input";
 
+const char *dali_button_event_name(int8_t ev) {
+  switch (static_cast<DaliButtonEvent>(ev)) {
+    case DaliButtonEvent::RELEASED:          return "released";
+    case DaliButtonEvent::PRESSED:           return "pressed";
+    case DaliButtonEvent::SHORT_PRESS:       return "short_press";
+    case DaliButtonEvent::DOUBLE_PRESS:      return "double_press";
+    case DaliButtonEvent::LONG_PRESS_START:  return "long_press_start";
+    case DaliButtonEvent::LONG_PRESS_REPEAT: return "long_press_repeat";
+    case DaliButtonEvent::LONG_PRESS_STOP:   return "long_press_stop";
+    default:                                 return "none";
+  }
+}
+
+// Decode an IEC 62386-103 control-device event frame.
+//
+// A 24-bit event frame splits into an addressing/source part (upper 14 bits) and a
+// 10-bit event-information field (lower 10 bits). For the common instance-addressing
+// scheme used by push buttons:
+//   bit 23      : 0
+//   bits 22..17 : source device short address (6 bits)
+//   bit 16      : 0
+//   bits 15..11 : instance type   (5 bits; 1 = push button per IEC 62386-301)
+//   bit 10      : instance-number selector (kept folded into instance_number below)
+//   bits  9..0  : event information (10 bits)
+//
+// NOTE: DALI-2 defines several instance-addressing schemes; the field positions above
+// cover the default push-button case. They are isolated here so they can be corrected
+// in one place once a real frame from the user's hardware is captured. The 10-bit
+// event-info split and the push-button event codes (IEC 62386-301) are stable.
+void decode_part103_event(DaliInputFrame &f) {
+  f.is_event = (f.bits == 24);
+  if (!f.is_event)
+    return;
+
+  uint32_t raw = f.raw & 0xFFFFFF;
+  f.event_info = raw & 0x03FF;                       // low 10 bits: event information
+  f.short_address = (uint8_t) ((raw >> 17) & 0x3F);  // bits 22..17: device short address
+  f.instance_type = (uint8_t) ((raw >> 11) & 0x1F);  // bits 15..11: instance type
+  f.instance_number = (uint8_t) ((raw >> 10) & 0x01); // bit 10: instance selector (best-effort)
+
+  // Push-button (instance type 1): the event code lives in the low bits of event_info.
+  f.button_event = static_cast<int8_t>(DaliButtonEvent::NONE);
+  if (f.instance_type == static_cast<uint8_t>(DaliInstanceType::PUSH_BUTTON)) {
+    uint16_t code = f.event_info & 0x000F;
+    if (code <= static_cast<uint16_t>(DaliButtonEvent::LONG_PRESS_STOP))
+      f.button_event = (int8_t) code;
+  }
+}
+
 // ── ISR: timestamp every edge into the ring buffer ───────────────────────────
 // Kept minimal. NOT marked IRAM_ATTR: ESPHome installs the esp32 GPIO ISR
 // service without ESP_INTR_FLAG_IRAM, so the handler runs from flash (IRAM is a
@@ -111,10 +160,18 @@ void DaliInputListener::finalize_frame_() {
     DaliInputFrame f;
     f.bits = this->rx_bits_;
     f.raw = this->rx_raw_;
+    decode_part103_event(f);
 
-    // Raw logging (phase 1). DALI-2 = 24 bits = 3 bytes.
-    ESP_LOGI(TAG, "INPUT frame: %u bits, raw=0x%06X  [%02X %02X %02X]", f.bits, f.raw & 0xFFFFFF,
-             (uint8_t) (f.raw >> 16), (uint8_t) (f.raw >> 8), (uint8_t) (f.raw));
+    if (f.is_event) {
+      ESP_LOGI(TAG,
+               "INPUT event: raw=0x%06X addr=%u itype=%u inum=%u event_info=0x%03X button=%s",
+               f.raw & 0xFFFFFF, f.short_address, f.instance_type, f.instance_number,
+               f.event_info, dali_button_event_name(f.button_event));
+    } else {
+      // 16-bit (e.g. a control gear's backward frame echoed on the line). Log raw only.
+      ESP_LOGD(TAG, "INPUT frame: %u bits, raw=0x%06X  [%02X %02X %02X]", f.bits, f.raw & 0xFFFFFF,
+               (uint8_t) (f.raw >> 16), (uint8_t) (f.raw >> 8), (uint8_t) (f.raw));
+    }
     this->frame_callback_.call(f);
   }
   this->rx_reset_();

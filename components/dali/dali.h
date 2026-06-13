@@ -225,11 +225,18 @@ enum class DaliLedDimmingCurve : uint8_t {
     LINEAR = 1
 };
 
+/// @brief How long to wait for a backward frame (device reply) before treating it as
+/// a NACK. Per IEC 62386-101 a control gear starts its answer within 7..22 Te of the
+/// forward frame (22 Te ~= 9.2 ms at 1200 baud), so this is comfortably above the
+/// spec maximum while bounding how long a missing/absent address blocks the master:
+/// at 64 addresses, an absent-heavy discovery scan no longer stalls for seconds.
+#define DALI_BACKWARD_TIMEOUT_MS 30
+
 /// @brief Abstract class for interfacing with a physical DALI bus
 class DaliPort {
 public:
     virtual void sendForwardFrame(uint8_t address, uint8_t data) = 0;
-    virtual uint8_t receiveBackwardFrame(unsigned long timeout_ms = 100);
+    virtual uint8_t receiveBackwardFrame(unsigned long timeout_ms = DALI_BACKWARD_TIMEOUT_MS);
 
 public:
     virtual void resetBus() { }
@@ -249,16 +256,24 @@ public:
     /// @brief Send a control command to the DALI bus
     /// @param address Device address, group address, or broadcast
     /// @param command Command byte
+    /// @remark Per IEC 62386-102, the bus master must repeat a command frame only
+    /// for *configuration* commands (opcodes 0x20..0x81: RESET, the DTR-backed
+    /// setters, ADD/REMOVE FROM GROUP, SET/REMOVE SCENE, SET SHORT ADDRESS,
+    /// ENABLE WRITE MEMORY, IDENTIFY DEVICE, ...). Control gear acts on such a
+    /// command only after receiving two identical frames within 100 ms.
+    /// Level/direct commands (opcodes 0x00..0x1F: OFF, UP, DOWN, RECALL MAX/MIN,
+    /// GO TO SCENE, ...) act on a single frame and would re-fire if repeated
+    /// (sending UP/DOWN twice would double the dim step), so they are sent once.
+    /// Neither category returns a backward frame.
     void sendControlCommand(short_addr_t addr, DaliCommand command) {
-        // Control commands must send two back to back frames,
-        // and will not return a response.
-        sendForwardFrame(
-            (addr << 1) | DALI_COMMAND, 
-            static_cast<uint8_t>(command));
+        const uint8_t opcode = static_cast<uint8_t>(command);
 
-        sendForwardFrame(
-            (addr << 1) | DALI_COMMAND, 
-            static_cast<uint8_t>(command));
+        sendForwardFrame((addr << 1) | DALI_COMMAND, opcode);
+
+        const bool is_configuration_command = (opcode >= 0x20 && opcode <= 0x81);
+        if (is_configuration_command) {
+            sendForwardFrame((addr << 1) | DALI_COMMAND, opcode);
+        }
     }
 
     /// @brief Send a special command to the DALI bus
@@ -862,6 +877,14 @@ public:
         port.sendControlCommand(short_addr, cmd);
     }
 
+    /// @brief Query which groups (0..15) a control gear belongs to.
+    /// @param short_addr Device short address
+    /// @return 16-bit membership mask; bit g set => member of group g.
+    uint16_t queryGroups(short_addr_t short_addr) {
+        uint8_t lo = port.sendQueryCommand(short_addr, DaliCommand::QUERY_GROUPS_0_7);
+        uint8_t hi = port.sendQueryCommand(short_addr, DaliCommand::QUERY_GROUPS_8_15);
+        return (uint16_t)lo | ((uint16_t)hi << 8);
+    }
 
 private:
     DaliPort& port;
