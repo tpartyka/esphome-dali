@@ -95,6 +95,11 @@ private:
     void create_discovery_button();
     void create_reboot_button();
 
+    /// @brief One-shot RX diagnostic: logs the idle level, sends a single broadcast
+    /// QUERY CONTROL GEAR PRESENT, then captures the raw RX line transitions so we can
+    /// see whether (and when) devices actually answer, independent of polarity guesses.
+    void diagnose_rx();
+
     InternalGPIOPin* m_rxPin;
     GPIOPin* m_txPin;
 
