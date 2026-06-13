@@ -10,6 +10,9 @@
 #ifdef USE_NUMBER
 #include "esphome/components/number/number.h"
 #endif
+#ifdef USE_BINARY_SENSOR
+#include "esphome/components/binary_sensor/binary_sensor.h"
+#endif
 
 //static const char *const TAG = "dali";
 static const bool DEBUG_LOG_RXTX = true; // NOTE: Will probably trigger WDT
@@ -100,6 +103,19 @@ protected:
     bool is_out_;
 };
 #endif  // USE_NUMBER
+
+#ifdef USE_BINARY_SENSOR
+// Auto-created (no YAML) diagnostic "online" sensor per lamp. The bus publishes
+// true/false to it as the device responds / stops responding to polling.
+class DaliAvailabilitySensor : public esphome::binary_sensor::BinarySensor, public esphome::Component {
+public:
+    void configure_dynamic_entity(const char* name, const char* object_id) {
+        uint32_t entity_fields =
+            (static_cast<uint32_t>(esphome::ENTITY_CATEGORY_DIAGNOSTIC) << esphome::ENTITY_FIELD_ENTITY_CATEGORY_SHIFT);
+        this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), entity_fields);
+    }
+};
+#endif  // USE_BINARY_SENSOR
 
 }  // namespace
 
@@ -454,6 +470,27 @@ void DaliBusComponent::create_fade_numbers() {
     make("DALI Fade Out Time", "dali_fade_out_time", true, m_fade_out_ms);
 
     DALI_LOGI("Created DALI fade in/out time numbers");
+#endif
+}
+
+binary_sensor::BinarySensor* DaliBusComponent::create_availability_sensor(short_addr_t short_addr) {
+#ifdef USE_BINARY_SENSOR
+    if (!m_expose_availability) return nullptr;
+
+    const int MAX_STR_LEN = 24;
+    char* name = new char[MAX_STR_LEN];
+    char* id = new char[MAX_STR_LEN];
+    snprintf(name, MAX_STR_LEN, "DALI Light %d Online", short_addr);
+    snprintf(id, MAX_STR_LEN, "dali_light_%d_online", short_addr);
+
+    auto* bs = new DaliAvailabilitySensor {};
+    bs->configure_dynamic_entity(name, id);
+    App.register_binary_sensor(bs);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(bs);
+    bs->publish_initial_state(true);  // assume online until a poll says otherwise
+    return bs;
+#else
+    return nullptr;
 #endif
 }
 

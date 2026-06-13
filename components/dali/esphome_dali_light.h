@@ -38,11 +38,13 @@ class DaliLight : public light::LightOutput, public Component {
     void setup_state(light::LightState *state) override;
     void write_state(light::LightState *state) override;
 
-    /// @brief Query the lamp's real on/off + brightness over the bus and publish it
-    /// to Home Assistant, so external changes (broadcast, another controller) are
-    /// reflected. Uses publish_state(), which does NOT call write_state, so it never
-    /// re-drives the bus. No-op for broadcast/group addresses. Driven by the bus loop.
+    /// @brief Poll the lamp's real availability + on/off + brightness and publish to
+    /// Home Assistant. Reflects external changes and marks the lamp unavailable when
+    /// it stops responding (and re-applies recovery config when it comes back). Uses
+    /// publish_state(), so it never re-drives the bus. Driven by the bus loop.
     void poll_and_publish();
+
+    uint8_t address() const { return address_; }
 
     void set_address(uint8_t address) { 
         address_ = address; 
@@ -76,6 +78,13 @@ class DaliLight : public light::LightOutput, public Component {
     // The LightState this output is bound to (captured in setup_state). Needed so
     // polling can publish updated values back to Home Assistant.
     light::LightState *state_{nullptr};
+
+    // Availability tracking + recovery (set up in setup_state, driven by polling).
+    binary_sensor::BinarySensor *avail_sensor_{nullptr};
+    uint8_t miss_count_{0};
+    bool available_{true};
+    bool recovery_config_done_{false};
+    void apply_recovery_config_();
 
     uint8_t address_;
     optional<uint16_t> fade_time_;

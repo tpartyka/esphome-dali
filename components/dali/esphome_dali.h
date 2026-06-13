@@ -13,6 +13,9 @@
 #include "esphome_dali_input.h"
 
 namespace esphome {
+
+namespace binary_sensor { class BinarySensor; }  // fwd: per-lamp availability sensors
+
 namespace dali {
 
 class DaliLight;  // forward decl: the bus keeps a list of lights to poll
@@ -94,6 +97,22 @@ public:
     uint32_t fade_in_ms() const  { return m_fade_in_ms; }
     uint32_t fade_out_ms() const { return m_fade_out_ms; }
 
+    /// @brief DALI power-on / system-failure levels (0..254, or 255 = keep last
+    /// level). Written to each device at discovery and re-applied when a device
+    /// recovers (so a power cut doesn't snap lamps to full brightness).
+    void set_power_on_level(uint8_t lvl) { m_power_on_level = lvl; }
+    void set_system_failure_level(uint8_t lvl) { m_system_failure_level = lvl; }
+    uint8_t power_on_level() const { return m_power_on_level; }
+    uint8_t system_failure_level() const { return m_system_failure_level; }
+
+    /// @brief Whether to create a per-lamp "online" binary_sensor.
+    void set_expose_availability(bool v) { m_expose_availability = v; }
+    bool expose_availability() const { return m_expose_availability; }
+
+    /// @brief Create + register a diagnostic "online" binary_sensor for a lamp.
+    /// Returns nullptr if availability sensors are disabled.
+    binary_sensor::BinarySensor* create_availability_sensor(short_addr_t short_addr);
+
     /// @brief Register a light to be state-polled by the bus loop. Called by each
     /// DaliLight once it confirms a real (non-broadcast/group) device is present.
     void register_pollable_light(DaliLight* light) {
@@ -156,6 +175,12 @@ private:
     // Fade in/out times in milliseconds (runtime-adjustable via HA number entities).
     uint32_t m_fade_in_ms = 1000;
     uint32_t m_fade_out_ms = 1000;
+
+    // Recovery config: 255 = "keep last level" (sensible default that avoids a
+    // power cut blasting lamps to full brightness).
+    uint8_t m_power_on_level = 255;
+    uint8_t m_system_failure_level = 255;
+    bool m_expose_availability = true;
 };
 
 }  // namespace dali

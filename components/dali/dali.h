@@ -537,6 +537,25 @@ public:
     }
 
 
+    /// @brief Query the control-gear status byte (QUERY STATUS). See STATUS_* bits
+    /// (STATUS_LAMP_ON, STATUS_LAMP_FAILURE, STATUS_FADE_STATE, STATUS_RESET_STATE,
+    /// STATUS_POWER_FAILURE, ...). A non-responding device returns 0.
+    uint8_t getStatus(short_addr_t short_addr) {
+        return port.sendQueryCommand(short_addr, DaliCommand::QUERY_STATUS);
+    }
+
+    /// @brief Set the system-failure level: the output the device drives if it
+    /// detects a DALI bus failure (bus voltage lost while the driver has mains).
+    /// @param level 0..254, or 255 (MASK) = keep last level before the failure.
+    void setSystemFailureLevel(short_addr_t short_addr, uint8_t level) {
+        port.setDtr0(level);
+        if (port.getDtr0(short_addr) != level) {
+            DALI_LOGE("WARNING: DTR0 not updated!");
+            return;
+        }
+        port.sendControlCommand(short_addr, DaliCommand::SET_SYSTEM_FAILURE_LEVEL_DTR0);
+    }
+
     /// @brief Get the minimum allowable brightness level (usually 1)
     /// @param short_addr Device short address
     /// @return 1..254

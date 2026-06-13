@@ -3,6 +3,7 @@
 #include <cmath>
 #include "esphome_dali_light.h"
 #include "esphome/core/log.h"
+#include "esphome/components/binary_sensor/binary_sensor.h"
 
 using namespace esphome;
 using namespace dali;
@@ -17,6 +18,10 @@ static const char *const TAG = "dali.light";
 // Safe because ESPHome setup is single-threaded: each LightState::setup()
 // calls setup_state() then invokes the callback in the same frame.
 static DaliLight* s_setup_instance = nullptr;
+
+// Consecutive non-responses before a lamp is marked unavailable. >1 avoids
+// flapping on a single transient bus collision.
+static const uint8_t DALI_AVAIL_MISS_THRESHOLD = 3;
 
 // Convert a fade time in milliseconds to the DALI fade-time code (0..15).
 // DALI fade time: t(X) = 0.5 * 2^(X/2) seconds, for X = 1..15 (X = 0 -> no fade).
@@ -132,6 +137,12 @@ void dali::DaliLight::setup_state(light::LightState *state) {
             // device and reflects external state changes back to Home Assistant.
             this->state_ = state;
             bus->register_pollable_light(this);
+            this->avail_sensor_ = bus->create_availability_sensor(this->address_);
+
+            // Apply power-failure recovery config now (device is present), and let
+            // polling re-apply it whenever the device drops and recovers.
+            this->apply_recovery_config_();
+            this->recovery_config_done_ = true;
         }
         else {
             ESP_LOGW(TAG, "DALI device at addr %.2x not found!", address_);
@@ -248,6 +259,15 @@ void dali::DaliLight::write_state(light::LightState *state) {
     bus->dali.lamp.setBrightness(address_, (uint8_t)dali_brightness);
 }
 
+void dali::DaliLight::apply_recovery_config_() {
+    if ((this->address_ == ADDR_BROADCAST) || ((this->address_ & ADDR_GROUP_MASK) != 0)) return;
+    uint8_t pol = bus->power_on_level();
+    uint8_t sfl = bus->system_failure_level();
+    bus->dali.lamp.setPowerOnLevel(this->address_, pol);
+    bus->dali.lamp.setSystemFailureLevel(this->address_, sfl);
+    ESP_LOGD(TAG, "DALI[%d] applied recovery config (power-on=%u, sys-fail=%u)", this->address_, pol, sfl);
+}
+
 void dali::DaliLight::poll_and_publish() {
     if (this->state_ == nullptr) return;
 
@@ -255,22 +275,48 @@ void dali::DaliLight::poll_and_publish() {
     // single state.
     if ((this->address_ == ADDR_BROADCAST) || ((this->address_ & ADDR_GROUP_MASK) != 0)) return;
 
-    uint8_t level = bus->dali.lamp.getCurrentLevel(this->address_);
-    // 0xFF (MASK) = level unknown / device mid-fade — don't publish a bogus value.
-    if (level == 0xFF) return;
+    // --- Availability -------------------------------------------------------
+    bool present = bus->dali.isDevicePresent(this->address_);
+    if (!present) {
+        if (this->miss_count_ < 255) this->miss_count_++;
+        if (this->available_ && this->miss_count_ >= DALI_AVAIL_MISS_THRESHOLD) {
+            this->available_ = false;
+            this->recovery_config_done_ = false;  // re-apply config when it returns
+            if (this->avail_sensor_ != nullptr) this->avail_sensor_->publish_state(false);
+            ESP_LOGW(TAG, "DALI[%d] not responding -> unavailable", this->address_);
+        }
+        return;  // hold the last published state; never publish a bogus "off"
+    }
+    this->miss_count_ = 0;
+    if (!this->available_) {
+        this->available_ = true;
+        if (this->avail_sensor_ != nullptr) this->avail_sensor_->publish_state(true);
+        ESP_LOGI(TAG, "DALI[%d] responding again -> available", this->address_);
+    }
+    if (!this->recovery_config_done_) {
+        // Device recovered (e.g. after a power cut) — restore our configuration.
+        this->apply_recovery_config_();
+        this->recovery_config_done_ = true;
+    }
 
-    bool on = (level > 0);
+    // --- State --------------------------------------------------------------
+    uint8_t status = bus->dali.lamp.getStatus(this->address_);
+    if (status & STATUS_FADE_STATE) return;  // mid-fade; don't publish an intermediate value
+    bool on = (status & STATUS_LAMP_ON) != 0;
 
     // Start from the current published values so we preserve color temperature, then
     // update on/off and brightness from what the device actually reports.
     LightColorValues v = this->state_->remote_values;
     v.set_state(on);
     if (on) {
-        // Inverse of write_state()'s mapping, for a clean command/report round-trip.
-        float brightness = ((float) level - this->dali_level_min_ + 1) / this->dali_level_range_;
-        if (brightness < 0.0f) brightness = 0.0f;
-        if (brightness > 1.0f) brightness = 1.0f;
-        v.set_brightness(brightness);
+        uint8_t level = bus->dali.lamp.getCurrentLevel(this->address_);
+        if (level != 0xFF && level != 0) {
+            // Inverse of write_state()'s mapping, for a clean command/report round-trip.
+            float brightness = ((float) level - this->dali_level_min_ + 1) / this->dali_level_range_;
+            if (brightness < 0.0f) brightness = 0.0f;
+            if (brightness > 1.0f) brightness = 1.0f;
+            v.set_brightness(brightness);
+        }
     }
 
     // Skip if nothing meaningfully changed (avoid log/API spam every poll).
@@ -283,5 +329,5 @@ void dali::DaliLight::poll_and_publish() {
     this->state_->current_values = v;
     this->state_->remote_values = v;
     this->state_->publish_state();
-    ESP_LOGD(TAG, "DALI[%d] external state -> %s (level %d)", this->address_, on ? "ON" : "OFF", level);
+    ESP_LOGD(TAG, "DALI[%d] external state -> %s", this->address_, on ? "ON" : "OFF");
 }

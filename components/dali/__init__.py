@@ -6,7 +6,7 @@ from esphome.core import CORE
 import esphome.codegen as cg
 import esphome.config_validation as cv
 
-AUTO_LOAD = ["light", "output", "button", "number"]
+AUTO_LOAD = ["light", "output", "button", "number", "binary_sensor"]
 
 CONF_DALI_BUS = 'dali_bus'
 CONF_INITIALIZE_ADDRESSES = 'initialize_addresses'
@@ -16,6 +16,20 @@ CONF_MAX_LIGHTS = 'max_lights'
 CONF_STATE_POLL_INTERVAL = 'state_poll_interval'
 CONF_DEFAULT_FADE_IN_TIME = 'default_fade_in_time'
 CONF_DEFAULT_FADE_OUT_TIME = 'default_fade_out_time'
+CONF_POWER_ON_LEVEL = 'power_on_level'
+CONF_SYSTEM_FAILURE_LEVEL = 'system_failure_level'
+CONF_EXPOSE_AVAILABILITY = 'expose_availability'
+
+
+def _validate_dali_level(value):
+    # Accept 'last' (255 = keep last level), 'off' (0), or a raw 0..255 level.
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ('last', 'mask'):
+            return 255
+        if v == 'off':
+            return 0
+    return cv.int_range(min=0, max=255)(value)
 
 # A DALI bus addresses up to 64 control gears (short addresses 0-63), so that is
 # the natural upper bound for lights discovered at runtime.
@@ -64,6 +78,13 @@ CONFIG_SCHEMA = cv.Schema({
     # Time" number entities, in milliseconds). Snapped to the nearest DALI step.
     cv.Optional(CONF_DEFAULT_FADE_IN_TIME, default='1s'): cv.positive_time_period_milliseconds,
     cv.Optional(CONF_DEFAULT_FADE_OUT_TIME, default='1s'): cv.positive_time_period_milliseconds,
+    # Power-failure recovery: where lamps go when their mains returns
+    # (power_on_level) or when the DALI bus fails (system_failure_level).
+    # 'last' keeps the level from before the outage; 'off' = 0; or a raw 0..254.
+    cv.Optional(CONF_POWER_ON_LEVEL, default='last'): _validate_dali_level,
+    cv.Optional(CONF_SYSTEM_FAILURE_LEVEL, default='last'): _validate_dali_level,
+    # Create a diagnostic "online" binary_sensor per discovered lamp.
+    cv.Optional(CONF_EXPOSE_AVAILABILITY, default=True): cv.boolean,
     cv.Optional(CONF_INPUT_DEVICES, default=False): cv.boolean,
     cv.Optional(CONF_ON_INPUT_FRAME): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DaliInputFrameTrigger),
@@ -83,6 +104,16 @@ async def to_code(config: OrderedDict):
     cg.add(var.set_state_poll_interval(config[CONF_STATE_POLL_INTERVAL]))
     cg.add(var.set_fade_in_ms(config[CONF_DEFAULT_FADE_IN_TIME]))
     cg.add(var.set_fade_out_ms(config[CONF_DEFAULT_FADE_OUT_TIME]))
+    cg.add(var.set_power_on_level(config[CONF_POWER_ON_LEVEL]))
+    cg.add(var.set_system_failure_level(config[CONF_SYSTEM_FAILURE_LEVEL]))
+    cg.add(var.set_expose_availability(config[CONF_EXPOSE_AVAILABILITY]))
+
+    # Per-lamp "online" binary_sensors are created at runtime; reserve a slot for
+    # each possible lamp in the fixed-capacity binary_sensor StaticVector (same
+    # rule as lights/buttons/numbers — see max_lights).
+    if config[CONF_EXPOSE_AVAILABILITY]:
+        for _ in range(config[CONF_MAX_LIGHTS]):
+            CORE.register_platform_component("binary_sensor", var)
 
     # The component auto-creates the "Run DALI Discovery" and "Reboot" buttons with
     # no YAML (see create_discovery_button / create_reboot_button). Each
