@@ -928,7 +928,7 @@ void DaliBusComponent::identify_lamp(uint8_t addr) {
 
 void DaliBusComponent::process_identify_() {
     if (!m_identify_.active) return;
-    if (millis() < m_identify_.next_at_ms) return;
+    if ((int32_t)(millis() - m_identify_.next_at_ms) < 0) return;
 
     // Blink a few times by alternating min/max brightness, then restore the
     // lamp's original level.
