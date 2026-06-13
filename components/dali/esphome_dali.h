@@ -85,14 +85,14 @@ public:
     /// reflects external changes. 0 disables polling.
     void set_state_poll_interval(uint32_t ms) { m_state_poll_interval_ms = ms; }
 
-    /// @brief Default fade times (seconds). Also settable at runtime via the HA
+    /// @brief Default fade times (milliseconds). Also settable at runtime via the HA
     /// "DALI Fade In/Out Time" number entities. Applied to the device's hardware
     /// fade on each on/off/dim command (fade-in when turning on/dimming, fade-out
     /// when turning off). DALI also fades any loaded color temperature with it.
-    void set_fade_in_s(float s)  { m_fade_in_s = s; }
-    void set_fade_out_s(float s) { m_fade_out_s = s; }
-    float fade_in_s() const  { return m_fade_in_s; }
-    float fade_out_s() const { return m_fade_out_s; }
+    void set_fade_in_ms(uint32_t ms)  { m_fade_in_ms = ms; }
+    void set_fade_out_ms(uint32_t ms) { m_fade_out_ms = ms; }
+    uint32_t fade_in_ms() const  { return m_fade_in_ms; }
+    uint32_t fade_out_ms() const { return m_fade_out_ms; }
 
     /// @brief Register a light to be state-polled by the bus loop. Called by each
     /// DaliLight once it confirms a real (non-broadcast/group) device is present.
@@ -144,9 +144,9 @@ private:
     uint32_t m_last_poll_ms = 0;
     size_t m_poll_index = 0;
 
-    // Fade in/out times in seconds (runtime-adjustable via HA number entities).
-    float m_fade_in_s = 1.0f;
-    float m_fade_out_s = 1.0f;
+    // Fade in/out times in milliseconds (runtime-adjustable via HA number entities).
+    uint32_t m_fade_in_ms = 1000;
+    uint32_t m_fade_out_ms = 1000;
 };
 
 }  // namespace dali

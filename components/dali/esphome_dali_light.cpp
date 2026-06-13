@@ -18,11 +18,12 @@ static const char *const TAG = "dali.light";
 // calls setup_state() then invokes the callback in the same frame.
 static DaliLight* s_setup_instance = nullptr;
 
-// Convert a fade time in seconds to the DALI fade-time code (0..15).
+// Convert a fade time in milliseconds to the DALI fade-time code (0..15).
 // DALI fade time: t(X) = 0.5 * 2^(X/2) seconds, for X = 1..15 (X = 0 -> no fade).
 //   1 -> 0.7s, 2 -> 1.0s, 3 -> 1.4s, 4 -> 2.0s, ... 15 -> 90.5s
-static uint8_t dali_fade_code(float seconds) {
-    if (seconds <= 0.05f) return 0;  // effectively immediate
+static uint8_t dali_fade_code(uint32_t ms) {
+    if (ms < 50) return 0;  // effectively immediate
+    float seconds = ms / 1000.0f;
     int code = (int) lroundf(2.0f * log2f(2.0f * seconds));
     if (code < 1) code = 1;
     if (code > 15) code = 15;
@@ -207,7 +208,7 @@ void dali::DaliLight::write_state(light::LightState *state) {
     // Apply the configured fade before the level command: fade-out when turning off,
     // fade-in when turning on or dimming. DALI fades the level (and any color
     // temperature loaded just below) in hardware over this time.
-    bus->dali.lamp.setFadeTime(address_, dali_fade_code(on ? bus->fade_in_s() : bus->fade_out_s()));
+    bus->dali.lamp.setFadeTime(address_, dali_fade_code(on ? bus->fade_in_ms() : bus->fade_out_ms()));
 
     if (!on) {
         // Short cut: send power off command

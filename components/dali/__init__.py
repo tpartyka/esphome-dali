@@ -60,10 +60,10 @@ CONFIG_SCHEMA = cv.Schema({
     # How often to poll each lamp's real state so Home Assistant reflects changes
     # made outside ESPHome (broadcast commands, another controller). 0s disables it.
     cv.Optional(CONF_STATE_POLL_INTERVAL, default='5s'): cv.positive_time_period_milliseconds,
-    # Initial fade in/out times in seconds (also adjustable live via the HA
-    # "DALI Fade In/Out Time" number entities). Snapped to the nearest DALI step.
-    cv.Optional(CONF_DEFAULT_FADE_IN_TIME, default=1.0): cv.positive_float,
-    cv.Optional(CONF_DEFAULT_FADE_OUT_TIME, default=1.0): cv.positive_float,
+    # Initial fade in/out times (also adjustable live via the HA "DALI Fade In/Out
+    # Time" number entities, in milliseconds). Snapped to the nearest DALI step.
+    cv.Optional(CONF_DEFAULT_FADE_IN_TIME, default='1s'): cv.positive_time_period_milliseconds,
+    cv.Optional(CONF_DEFAULT_FADE_OUT_TIME, default='1s'): cv.positive_time_period_milliseconds,
     cv.Optional(CONF_INPUT_DEVICES, default=False): cv.boolean,
     cv.Optional(CONF_ON_INPUT_FRAME): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DaliInputFrameTrigger),
@@ -81,8 +81,8 @@ async def to_code(config: OrderedDict):
     cg.add(var.set_tx_pin(tx_pin))
 
     cg.add(var.set_state_poll_interval(config[CONF_STATE_POLL_INTERVAL]))
-    cg.add(var.set_fade_in_s(config[CONF_DEFAULT_FADE_IN_TIME]))
-    cg.add(var.set_fade_out_s(config[CONF_DEFAULT_FADE_OUT_TIME]))
+    cg.add(var.set_fade_in_ms(config[CONF_DEFAULT_FADE_IN_TIME]))
+    cg.add(var.set_fade_out_ms(config[CONF_DEFAULT_FADE_OUT_TIME]))
 
     # The component auto-creates the "Run DALI Discovery" and "Reboot" buttons with
     # no YAML (see create_discovery_button / create_reboot_button). Each
