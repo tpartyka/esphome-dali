@@ -846,10 +846,67 @@ void DaliBusComponent::sync_group_member_states(uint8_t group, const GroupStateU
 }
 
 void DaliBusComponent::do_scene_action(uint8_t target_addr, uint8_t scene, SceneAction action) {
+    scene &= 0x0F;
+    // DALI Part 102 scenes only store brightness; m_scene_color_temp_ is a software
+    // side-table for group/individual-lamp targets only (not ADDR_BROADCAST, which
+    // the HA "DALI Scene N" buttons use and which has no single CT to capture).
+    bool is_group = (target_addr != ADDR_BROADCAST) && ((target_addr & ADDR_GROUP_MASK) != 0);
+    bool is_lamp = target_addr <= ADDR_SHORT_MAX;
+
     switch (action) {
-        case SceneAction::Recall: dali.scene.goToScene(target_addr, scene); break;
-        case SceneAction::Store:  dali.scene.storeScene(target_addr, scene); break;
-        case SceneAction::Remove: dali.scene.removeScene(target_addr, scene); break;
+        case SceneAction::Recall: {
+            dali.scene.goToScene(target_addr, scene);
+            if (!m_scene_color_temp_[scene].has_value()) break;
+            uint16_t ct = m_scene_color_temp_[scene].value();
+            if (is_group) {
+                uint8_t group = target_addr & 0x0F;
+                DaliLight* gl = m_group_lights_[group];
+                if (gl != nullptr && gl->supports_color_temp()) {
+                    dali.color.setColorTemperature(target_addr, ct, false);
+                    GroupStateUpdate update;
+                    update.color_temp_mired = ct;
+                    gl->publish_optimistic_state(update);
+                    sync_group_member_states(group, update);
+                }
+            } else if (is_lamp) {
+                for (DaliLight* light : m_pollable_lights) {
+                    if (light->address() != target_addr) continue;
+                    if (light->supports_color_temp()) {
+                        dali.color.setColorTemperature(target_addr, ct, false);
+                        GroupStateUpdate update;
+                        update.color_temp_mired = ct;
+                        light->publish_optimistic_state(update);
+                    }
+                    break;
+                }
+            }
+            break;
+        }
+        case SceneAction::Store: {
+            dali.scene.storeScene(target_addr, scene);
+            m_scene_color_temp_[scene] = {};
+            if (is_group) {
+                DaliLight* gl = m_group_lights_[target_addr & 0x0F];
+                if (gl != nullptr && gl->supports_color_temp()) {
+                    uint16_t ct = gl->current_color_temp_mired();
+                    if (ct != 0) m_scene_color_temp_[scene] = ct;
+                }
+            } else if (is_lamp) {
+                for (DaliLight* light : m_pollable_lights) {
+                    if (light->address() != target_addr) continue;
+                    if (light->supports_color_temp()) {
+                        uint16_t ct = dali.color.getColorTemperature(target_addr);
+                        if (ct != 0) m_scene_color_temp_[scene] = ct;
+                    }
+                    break;
+                }
+            }
+            break;
+        }
+        case SceneAction::Remove:
+            dali.scene.removeScene(target_addr, scene);
+            m_scene_color_temp_[scene] = {};
+            break;
     }
 }
 
