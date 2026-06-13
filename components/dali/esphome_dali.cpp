@@ -312,6 +312,14 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
         DALI_LOGW("  You should fix your address assignments.");
     }
 
+    // Create entities for every device already on the bus, not just the ones the
+    // init-mode binary search returned. Already-addressed lamps don't enter
+    // initialization mode (so findNextAddress never returns them) — without this,
+    // initialize_addresses: none/unassigned would create no entities on reboot and
+    // the lamps would vanish from Home Assistant. This is non-destructive: it only
+    // reads, it never reassigns addresses.
+    create_entities_for_present_devices();
+
     DALI_LOGI("DALI discovery finished in %u ms", (unsigned) (millis() - this->discovery_start_ms_));
 
     // If no dynamic lights were discovered, disable loop() to avoid unnecessary CPU cycles.
@@ -319,6 +327,22 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
     if (m_dynamic_lights.empty() && !m_input_devices) {
         this->disable_loop();
     }
+}
+
+void DaliBusComponent::create_entities_for_present_devices() {
+    DALI_LOGI("Scanning bus for addressed devices to create entities...");
+    uint8_t created = 0;
+    for (uint8_t addr = 0; addr <= ADDR_SHORT_MAX; addr++) {
+        delay(1);  // yield to ESP stack
+        esp_task_wdt_reset();
+        if (m_addresses[addr]) continue;  // already has an entity (discovery or static YAML)
+        if (dali.isDevicePresent(addr)) {
+            m_addresses[addr] = 0xFFFFFF;  // mark created (long address unknown here)
+            create_light_component(addr, 0xFFFFFF);
+            created++;
+        }
+    }
+    DALI_LOGI("Created %u light entit%s for already-addressed device(s)", created, created == 1 ? "y" : "ies");
 }
 
 void DaliBusComponent::create_light_component(short_addr_t short_addr, uint32_t long_addr) {

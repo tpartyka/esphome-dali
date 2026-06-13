@@ -114,6 +114,11 @@ private:
     uint8_t readByte();
 
     void create_light_component(short_addr_t short_addr, uint32_t long_addr);
+    /// @brief Non-destructively presence-scan addresses 0-63 and create a light
+    /// entity for any device that doesn't already have one. Reads only; never
+    /// reassigns addresses. Lets entities be rebuilt every boot without re-running
+    /// the disruptive INITIALISE/RANDOMIZE address assignment.
+    void create_entities_for_present_devices();
     void create_discovery_button();
     void create_reboot_button();
     void create_fade_numbers();
