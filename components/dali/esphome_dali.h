@@ -333,6 +333,12 @@ private:
     bool m_expose_scenes = true;
     uint8_t m_selected_scene_ = 0;
 
+    // Software per-scene color-temperature table (DALI Part 102 scenes only store
+    // brightness). Indexed by scene number; only captured/recalled for group or
+    // individual-lamp targets (not ADDR_BROADCAST, which the HA "DALI Scene N"
+    // buttons use). RAM-only -- resets on reboot.
+    optional<uint16_t> m_scene_color_temp_[16] = {};
+
     // Group-membership controls (Add/Remove the target address to/from a group).
     uint8_t m_group_target_addr_ = 0;
     uint8_t m_group_number_ = 0;
