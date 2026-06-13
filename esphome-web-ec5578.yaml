@@ -41,6 +41,6 @@ dali:
     number: GPIO5
     inverted: true
   discovery: true                  # Auto-discover devices on the bus
-  initialize_addresses: none # unassigned   # Auto-assign short addresses if needed
+  initialize_addresses: none       # Auto-assign short addresses if needed ('unassigned' or 'all')
   expose_dashboard: true
   dashboard_port: 8080
