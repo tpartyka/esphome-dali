@@ -8,15 +8,25 @@ This component implements a DALI master that can talk to devices on a DALI bus.
 ## Supported Features:
 
 - Automatic device discovery & address assignment
+  - New devices are assigned the lowest free short address, avoiding collisions
 - DALI dimmer support
   - brightness control
   - colour temperature control
-- Broadcast or short address
+- Broadcast, group, or short address
 - Query device capabilities 
   - `dali.light` component automatically enables colour temperature if device reports the capability
 - DALI parameter configuration
   - Fade rate/time
   - Brightness curve (log/linear)
+- Groups & scenes
+  - Auto-discovered group membership, exposed as "DALI Group N" lights
+  - Scene recall/store/remove buttons (scenes 0-15)
+- Reliability & error recovery
+  - Per-lamp "online"/"problem" diagnostic sensors and a bus-connectivity sensor
+  - Persisted device inventory, so entities survive reboots and brief bus outages
+  - Configurable power-on and system-failure recovery levels
+- Multi-master collision avoidance/detection on the bit-banged bus (when `input_devices` is enabled)
+- Built-in web dashboard for lamp/group/scene control and lamp identification
 
 ## Usage:
 
@@ -41,6 +51,50 @@ dali:
 
   # Devices will be automatically assigned a short address if they do not have one
   initialize_addresses: true
+
+  # --- Optional settings (all shown with their defaults) ---
+
+  # How often to poll each lamp's actual state, so Home Assistant reflects
+  # changes made outside ESPHome (broadcast commands, another controller).
+  # 0s disables polling.
+  state_poll_interval: 15s
+
+  # Initial fade in/out times (also adjustable live via the "DALI Fade In/Out
+  # Time" number entities), in milliseconds.
+  default_fade_in_time: 1s
+  default_fade_out_time: 1s
+
+  # Where lamps go when mains power returns, or when the DALI bus itself
+  # fails. 'last' keeps the previous level, 'off', or a raw 0..254 level.
+  power_on_level: last
+  system_failure_level: last
+
+  # Diagnostic "online"/"problem" binary_sensors per lamp, and a "DALI Bus
+  # Online" connectivity sensor.
+  expose_availability: true
+  expose_problem: true
+  expose_bus_status: true
+
+  # Persist the discovered address inventory to flash, so lamp entities exist
+  # at boot even if the bus is briefly unreachable.
+  persist_inventory: true
+
+  # Auto-discover group membership and expose one "DALI Group N" light per
+  # active group (0-15).
+  expose_groups: true
+  max_groups: 16
+
+  # Expose 16 "DALI Scene N" recall buttons plus a scene-number selector and
+  # store/clear buttons (scenes 0-15).
+  expose_scenes: true
+
+  # Serve a small built-in web dashboard (see "Web Dashboard" below). ESP32 only.
+  expose_dashboard: false
+  dashboard_port: 8080
+
+  # Enable the push-button/input-device listener and multi-master collision
+  # avoidance on the bit-banged TX (see on_input_frame below).
+  input_devices: false
 ```
 
 ![HomeAssistant Discovery](doc/ha-discovery.png)
@@ -67,9 +121,39 @@ light:
   fade_rate: 44724  # steps/second
 ```
 
+## Web Dashboard
+
+Setting `expose_dashboard: true` serves a small built-in dashboard on
+`dashboard_port` (default `8080`), e.g. `http://<device-ip>:8080/`. It shows
+all discovered lamps with their online/problem status, on/off and brightness,
+and group membership, and lets you:
+
+- Add/remove a lamp's group membership
+- Recall, store, or remove a scene, targeting all lamps, a group, or a single lamp
+- "Identify" a lamp (briefly blink it) to find its physical location
+
+The dashboard reads from cached state and enqueues any changes, which are
+applied on the next main-loop iteration — it does not block or interfere with
+bus polling/discovery.
+
+## Reliability & Recovery
+
+- **Availability & problem sensors** (`expose_availability`, `expose_problem`):
+  each discovered lamp gets diagnostic "online" and "problem" binary_sensors,
+  the latter driven by the DALI STATUS `lampFailure` bit.
+- **Bus status** (`expose_bus_status`): a single "DALI Bus Online" connectivity
+  sensor reflects whether the DALI bus itself is responding.
+- **Persisted inventory** (`persist_inventory`): the discovered short-address
+  inventory is saved to flash, so lamp entities exist at boot (as
+  "unavailable" if missing) even before the bus has been re-polled.
+- **Power-failure recovery** (`power_on_level`, `system_failure_level`):
+  controls what level a lamp returns to after mains power returns or after a
+  DALI bus failure — `last` (keep previous level), `off`, or a raw `0..254`
+  level.
+
 ## Future Work:
 
-- [ ] Support scenes & groups
+- [X] Support scenes & groups
 - [X] Allow configuration of DALI device parameters
 - [X] Automatic device discovery
 - [X] Automatic address assignment

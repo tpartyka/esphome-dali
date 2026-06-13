@@ -42,9 +42,19 @@ class DaliLight : public light::LightOutput, public Component {
     /// Home Assistant. Reflects external changes and marks the lamp unavailable when
     /// it stops responding (and re-applies recovery config when it comes back). Uses
     /// publish_state(), so it never re-drives the bus. Driven by the bus loop.
-    void poll_and_publish();
+    /// @return true if the device responded (or is not individually pollable, so it
+    /// must not count against bus health); false if it was probed and did not answer.
+    bool poll_and_publish();
 
     uint8_t address() const { return address_; }
+
+    /// @brief Cached state accessors for the web dashboard (esphome_dali_web.*).
+    /// These are updated by poll_and_publish() / setup_state() and are safe to
+    /// read from the main loop task (do not call from another task/thread).
+    bool is_available() const { return available_; }
+    bool has_problem() const { return problem_; }
+    bool supports_color_temp() const { return tc_supported_; }
+    const light::LightColorValues& remote_values() const { return state_->remote_values; }
 
     void set_address(uint8_t address) { 
         address_ = address; 
@@ -81,8 +91,11 @@ class DaliLight : public light::LightOutput, public Component {
 
     // Availability tracking + recovery (set up in setup_state, driven by polling).
     binary_sensor::BinarySensor *avail_sensor_{nullptr};
+    // Lamp/gear fault sensor, driven by the DALI STATUS lampFailure bit.
+    binary_sensor::BinarySensor *problem_sensor_{nullptr};
     uint8_t miss_count_{0};
     bool available_{true};
+    bool problem_{false};
     bool recovery_config_done_{false};
     void apply_recovery_config_();
 
