@@ -263,6 +263,22 @@ void dali::DaliLight::publish_optimistic_state(const GroupStateUpdate& update) {
     this->state_->publish_state();
 }
 
+void dali::DaliLight::perform_call(const ControlRequest& req) {
+    if (this->state_ == nullptr) return;
+
+    auto call = this->state_->make_call();
+    if (req.has_state) call.set_state(req.state);
+    if (req.has_brightness) call.set_brightness(req.brightness);
+    if (req.has_color_temp && tc_supported_) {
+        // Inverse of current_color_temp_mired()'s mapping.
+        float color_temperature = (req.color_temp_mireds - dali_tc_coolest_) / (dali_tc_warmest_ - dali_tc_coolest_);
+        if (color_temperature < 0.0f) color_temperature = 0.0f;
+        if (color_temperature > 1.0f) color_temperature = 1.0f;
+        call.set_color_temperature(color_temperature);
+    }
+    call.perform();
+}
+
 void dali::DaliLight::write_state(light::LightState *state) {
     bool on;
     float brightness;
@@ -409,6 +425,7 @@ bool dali::DaliLight::poll_and_publish() {
     if (!present) {
         if (dali_availability::availability_on_missing(avail, DALI_AVAIL_MISS_THRESHOLD)) {
             this->publish_status_();
+            bus->log_event_(dali_event_log::EventType::LampUnavailable, this->address_);
             ESP_LOGW(TAG, "DALI[%d] not responding -> unavailable", this->address_);
         }
         this->miss_count_ = avail.miss_count;
@@ -418,6 +435,7 @@ bool dali::DaliLight::poll_and_publish() {
     }
     if (dali_availability::availability_on_present(avail)) {
         this->publish_status_();
+        bus->log_event_(dali_event_log::EventType::LampAvailable, this->address_);
         ESP_LOGI(TAG, "DALI[%d] responding again -> available", this->address_);
     }
     this->miss_count_ = avail.miss_count;
@@ -438,6 +456,8 @@ bool dali::DaliLight::poll_and_publish() {
     if (problem != this->problem_) {
         this->problem_ = problem;
         this->publish_status_();
+        bus->log_event_(problem ? dali_event_log::EventType::LampProblem : dali_event_log::EventType::LampOk,
+                         this->address_);
         ESP_LOGW(TAG, "DALI[%d] lamp failure -> %s", this->address_, problem ? "PROBLEM" : "OK");
     }
 

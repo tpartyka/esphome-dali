@@ -24,6 +24,19 @@ struct GroupStateUpdate {
     optional<uint16_t> color_temp_mired;
 };
 
+/// @brief Request for DaliLight::perform_call(): only fields with their `has_*`
+/// flag set are applied. Used by the web dashboard's direct-control endpoint
+/// (/api/lamp) to drive any lamp or group light through the normal
+/// light::LightState::make_call() path.
+struct ControlRequest {
+    bool has_state{false};
+    bool state{false};
+    bool has_brightness{false};
+    float brightness{0.0f};  // 0.0-1.0
+    bool has_color_temp{false};
+    uint16_t color_temp_mireds{0};
+};
+
 /// @brief A bus command computed by write_state(), either sent immediately or
 /// held by the debounce logic in loop() until DALI_LIGHT_COMMAND_DEBOUNCE_MS
 /// has elapsed since the last command sent to this light's address.
@@ -78,6 +91,15 @@ class DaliLight : public light::LightOutput, public Component {
     /// driving the bus. Unset fields in `update` are left unchanged. No-op if
     /// this light has no LightState yet.
     void publish_optimistic_state(const GroupStateUpdate& update);
+
+    /// @brief Perform a LightCall on this light's bound LightState (on/off,
+    /// brightness 0-1, color temperature in mireds -- only fields with their
+    /// `has_*` flag set are applied). Goes through the normal
+    /// light::LightState::make_call()...perform() path, so write_state()'s
+    /// existing debounce/coalescing and HA-sync logic apply unchanged. No-op if
+    /// this light has no LightState yet (state_ == nullptr) or, for color temp,
+    /// if this light doesn't support it.
+    void perform_call(const ControlRequest& req);
 
     /// @brief This light's last-known color temperature in mireds, derived from
     /// its published color_temperature (0..1) via this light's own coolest/warmest
