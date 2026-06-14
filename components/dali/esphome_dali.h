@@ -17,6 +17,7 @@
 namespace esphome {
 
 namespace binary_sensor { class BinarySensor; }  // fwd: per-lamp availability sensors
+namespace sensor { class Sensor; }  // fwd: bus diagnostic counters
 
 namespace dali {
 
@@ -119,6 +120,14 @@ public:
     void set_expose_bus_status(bool v) { m_expose_bus_status = v; }
     bool expose_bus_status() const { return m_expose_bus_status; }
 
+    /// @brief Whether to create software-only line/PSU diagnostic entities: lifetime
+    /// "DALI Bus Errors"/"DALI Bus Down Events" counters, a "DALI Bus Disconnected"
+    /// binary_sensor (RX stuck high = no PSU/physically disconnected), and (when
+    /// `input_devices` is enabled) a "DALI Collisions" counter from the multi-master
+    /// collision detector.
+    void set_expose_bus_diagnostics(bool v) { m_expose_bus_diagnostics = v; }
+    bool expose_bus_diagnostics() const { return m_expose_bus_diagnostics; }
+
     /// @brief Persist the discovered short-address inventory to flash, so on the next
     /// boot the light entities exist immediately (even if the bus is momentarily down
     /// at startup) and a device that was known but is now absent is tracked as a
@@ -208,6 +217,11 @@ public:
     /// @brief Create + register the single "DALI Bus Online" connectivity sensor.
     void create_bus_sensor();
 
+    /// @brief Create + register the software-only line/PSU diagnostic entities
+    /// (error/bus-down/collision counters, bus-disconnected sensor). No-op if
+    /// `expose_bus_diagnostics` is false.
+    void create_diag_sensors();
+
     /// @brief Register a light to be state-polled by the bus loop. Called by each
     /// DaliLight once it confirms a real (non-broadcast/group) device is present.
     void register_pollable_light(DaliLight* light) {
@@ -231,6 +245,11 @@ public: // DaliPort
 
 private:
     void writeBit(bool bit);
+    /// @brief If `input_devices` is enabled, sample the RX pin during a half-bit
+    /// where `writeBit()` is releasing the bus (per dali_tx::master_releasing) and
+    /// bump the collision counter if another master is driving it low. half: 0 =
+    /// first half-bit, 1 = second. No-op (and no extra delay) if input_devices is off.
+    void check_collision_(bool bit, int half);
     void writeByte(uint8_t b);
     uint8_t readByte();
 
@@ -272,6 +291,20 @@ private:
     /// @brief Re-sync after the bus comes back: rebuild any missing entities. Each
     /// lamp re-applies its own recovery config on its unavailable->available edge.
     void on_bus_recovered_();
+
+    /// @brief Increment + publish the "DALI Bus Errors" counter (a polled lamp did
+    /// not respond).
+    void note_poll_error_();
+    /// @brief Increment + publish the "DALI Bus Down Events" counter (bus transitioned
+    /// online -> offline).
+    void note_bus_down_();
+    /// @brief Publish the "DALI Bus Disconnected" binary_sensor if `disconnected`
+    /// differs from the last published value (RX stuck high at the start of
+    /// receiveBackwardFrame's wait = no PSU/physically disconnected bus).
+    void note_disconnected_(bool disconnected);
+    /// @brief Increment + publish the "DALI Collisions" counter (another master drove
+    /// the bus while we were releasing it during writeBit()).
+    void note_collision_();
 
     /// @brief Load the persisted inventory bitmask and create a light entity for each
     /// known short address (before discovery), so entities exist at API connect even
@@ -372,6 +405,17 @@ private:
     uint8_t m_system_failure_level = 255;
     bool m_expose_problem = true;
     bool m_expose_bus_status = true;
+
+    // Software-only line/PSU diagnostics (phase 7).
+    bool m_expose_bus_diagnostics = true;
+    sensor::Sensor* m_error_sensor_ = nullptr;
+    sensor::Sensor* m_bus_down_sensor_ = nullptr;
+    sensor::Sensor* m_collision_sensor_ = nullptr;
+    binary_sensor::BinarySensor* m_disconnected_sensor_ = nullptr;
+    uint32_t m_error_count_ = 0;
+    uint32_t m_bus_down_count_ = 0;
+    uint32_t m_collision_count_ = 0;
+    bool m_disconnected_ = false;
 
     // Device-class string-table indices supplied by codegen (0 = unset).
     uint8_t m_dc_idx_connectivity = 0;

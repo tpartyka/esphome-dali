@@ -63,6 +63,10 @@ the C++ code might create at runtime, e.g.:
   `DALI_GROUP_NUMBER_COUNT` for auto-created numbers
 - one slot per lamp for the "Status" diagnostic binary_sensor
   (`expose_problem`), plus one for `expose_bus_status`
+- `DALI_DIAG_BINARY_SENSOR_COUNT` (binary_sensor) plus `DALI_DIAG_SENSOR_COUNT`
+  / `DALI_DIAG_COLLISION_SENSOR_COUNT` (sensor) for `expose_bus_diagnostics`'s
+  "DALI Bus Disconnected"/"DALI Bus Errors"/"DALI Bus Down Events"/"DALI
+  Collisions" entities
 
 If you add a new kind of runtime-created entity, add a matching `_COUNT`
 constant and `register_platform_component` call here, or it will be silently
@@ -80,12 +84,15 @@ thread-safe and must only be touched from the main loop.
 
 ### Collision avoidance
 
-`dali_tx_collision.h` contains pure, framework-agnostic helpers (used by
-`writeBit()` in `esphome_dali.cpp`, gated on `input_devices: true`) that
-detect when another master is driving the wired-AND bus during a half-bit
-where this device is releasing it — per the IEC 62386-101 multi-master
-collision rules. These helpers are unit-tested on the host in
-`tests/test_collision.cpp`.
+`dali_tx_collision.h` contains pure, framework-agnostic helpers, wired into
+`writeBit()` in `esphome_dali.cpp` via `check_collision_()` (gated on
+`input_devices: true`) that detect when another master is driving the
+wired-AND bus during a half-bit where this device is releasing it — per the
+IEC 62386-101 multi-master collision rules. Each half-bit's delay is split
+around a single passive `digital_read()` so the total Manchester bit period is
+unchanged. Detected collisions increment the "DALI Collisions" diagnostic
+sensor (`expose_bus_diagnostics`). These helpers are unit-tested on the host
+in `tests/test_collision.cpp`.
 
 ### Reliability / error recovery
 
@@ -98,3 +105,10 @@ sent to control gear. `receiveBackwardFrame()` treats an RX line that's
 already high at the start of the wait as an immediate NACK (disconnected/
 floating bus) rather than misreading it as a phantom reply — this avoids a
 discovery runaway loop and task-watchdog reboot when the bus is disconnected.
+
+`expose_bus_diagnostics` (default `true`) adds software-only line/PSU
+diagnostics built from these existing signals: lifetime "DALI Bus Errors" /
+"DALI Bus Down Events" counters (incremented in `loop()`'s poll block and
+`update_bus_health_()`), a "DALI Bus Disconnected" binary_sensor mirroring the
+RX-stuck-high case above, and (with `input_devices: true`) the "DALI
+Collisions" counter from the collision detector described above.
