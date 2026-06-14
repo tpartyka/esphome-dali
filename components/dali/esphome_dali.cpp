@@ -114,7 +114,7 @@ public:
 
 protected:
     void press_action() override {
-        this->parent_->dali.scene.goToScene(ADDR_BROADCAST, scene_);
+        this->parent_->do_scene_action(ADDR_BROADCAST, scene_, DaliBusComponent::SceneAction::Recall);
     }
 
     DaliBusComponent* parent_;
@@ -878,6 +878,26 @@ void DaliBusComponent::do_scene_action(uint8_t target_addr, uint8_t scene, Scene
     switch (action) {
         case SceneAction::Recall: {
             dali.scene.goToScene(target_addr, scene);
+
+            // DALI scenes change each ballast's on/off state and brightness from levels
+            // stored in its own memory, which this controller doesn't track -- refresh
+            // the affected lamp entities immediately rather than waiting up to
+            // state_poll_interval for the regular poll loop to notice.
+            if (target_addr == ADDR_BROADCAST) {
+                for (DaliLight* light : m_pollable_lights) light->poll_and_publish();
+            } else if (is_group) {
+                uint16_t mask = (uint16_t) (1u << (target_addr & 0x0F));
+                for (DaliLight* light : m_pollable_lights) {
+                    if ((m_group_membership_[light->address()] & mask) != 0) light->poll_and_publish();
+                }
+            } else if (is_lamp) {
+                for (DaliLight* light : m_pollable_lights) {
+                    if (light->address() != target_addr) continue;
+                    light->poll_and_publish();
+                    break;
+                }
+            }
+
             if (!m_scene_color_temp_[scene].has_value()) break;
             uint16_t ct = m_scene_color_temp_[scene].value();
             if (is_group) {
