@@ -229,6 +229,14 @@ public:
         if (m_state_poll_interval_ms > 0) this->enable_loop();  // ensure loop() runs
     }
 
+    /// @brief Register a light (any address: short, group, or broadcast) so the
+    /// bus loop can flush its debounced/coalesced bus commands. Called by every
+    /// DaliLight from setup_state().
+    void register_command_light(DaliLight* light) {
+        m_command_lights.push_back(light);
+        this->enable_loop();  // ensure loop() runs to flush debounced commands
+    }
+
     /// @brief Optimistically apply `update` to the HA-published state of every
     /// individually-pollable lamp that is a member of `group` (0..15), per
     /// m_group_membership_. Called when a "DALI Group N" light's write_state()
@@ -330,6 +338,7 @@ private:
 
     // Lights (static + dynamic) we periodically poll so HA reflects external state.
     std::vector<DaliLight*> m_pollable_lights;
+    std::vector<DaliLight*> m_command_lights;
     uint32_t m_state_poll_interval_ms = 15000;
     uint32_t m_last_poll_ms = 0;
     size_t m_poll_index = 0;

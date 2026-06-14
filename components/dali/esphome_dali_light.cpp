@@ -23,6 +23,13 @@ static DaliLight* s_setup_instance = nullptr;
 // flapping on a single transient bus collision.
 static const uint8_t DALI_AVAIL_MISS_THRESHOLD = 3;
 
+// Minimum spacing between bus commands sent to the same light's address.
+// Rapid successive write_state() calls (e.g. a dragged brightness slider, or
+// an automation looping quickly) are coalesced to the latest value and sent
+// at most this often, to avoid overwhelming control gear with back-to-back
+// DAPC commands.
+static const uint32_t DALI_LIGHT_COMMAND_DEBOUNCE_MS = 150;
+
 // Convert a fade time in milliseconds to the DALI fade-time code (0..15).
 // DALI fade time: t(X) = 0.5 * 2^(X/2) seconds, for X = 1..15 (X = 0 -> no fade).
 //   1 -> 0.7s, 2 -> 1.0s, 3 -> 1.4s, 4 -> 2.0s, ... 15 -> 90.5s
@@ -154,6 +161,7 @@ void dali::DaliLight::setup_state(light::LightState *state) {
         // can track availability and restore configuration if the device appears.
         this->state_ = state;
         bus->register_pollable_light(this);
+        bus->register_command_light(this);
         this->status_sensor_ = bus->create_status_sensor(this->address_);
 
         if (this->available_) {
@@ -168,6 +176,7 @@ void dali::DaliLight::setup_state(light::LightState *state) {
     else {
         // Broadcast/group address: no per-device polling or capability detection.
         this->state_ = state;
+        bus->register_command_light(this);
         // TODO: How do we detect color temperature support for broadcast and group addresses?
     }
 
@@ -259,15 +268,17 @@ void dali::DaliLight::write_state(light::LightState *state) {
 
     state->current_values_as_binary(&on);
 
+    PendingBusWrite pw;
+    pw.valid = true;
+    pw.on = on;
+
     // Apply the configured fade before the level command: fade-out when turning off,
     // fade-in when turning on or dimming. DALI fades the level (and any color
     // temperature loaded just below) in hardware over this time.
-    bus->dali.lamp.setFadeTime(address_, dali_fade_code(on ? bus->fade_in_ms() : bus->fade_out_ms()));
+    pw.fade_code = dali_fade_code(on ? bus->fade_in_ms() : bus->fade_out_ms());
 
     if (!on) {
-        // Short cut: send power off command
-        //bus->dali.lamp.turnOff(address_); // no fade
-        bus->dali.lamp.setBrightness(address_, 0); // fade
+        pw.brightness = 0;
 
         // A group/broadcast command reaches its members on the bus instantly, but
         // their individual HA entities only learn of it on the next poll cycle.
@@ -277,6 +288,7 @@ void dali::DaliLight::write_state(light::LightState *state) {
             update.on = false;
             bus->sync_group_member_states(address_ & 0x0F, update);
         }
+        schedule_or_send_(pw);
         return;
     }
 
@@ -292,12 +304,8 @@ void dali::DaliLight::write_state(light::LightState *state) {
         // Only update if temperature has changed, to allow faster brightness changes
         if (dali_color_temperature != last_temperature_) {
             last_temperature_ = dali_color_temperature;
-
-            ESP_LOGD(TAG, "DALI[%d] Tc=%d", address_, dali_color_temperature);
-
-            // IMPORTANT: Do not set start_fade (activate), or the color temperature fade will
-            // be cancelled when we next call setBrightness, and no color change will occur.
-            bus->dali.color.setColorTemperature(address_, dali_color_temperature, false);
+            pw.has_color = true;
+            pw.color_temp_mired = dali_color_temperature;
         }
     } else {
         state->current_values_as_brightness(&brightness);
@@ -307,8 +315,8 @@ void dali::DaliLight::write_state(light::LightState *state) {
     if (dali_brightness < 1) dali_brightness = 1;
     if (dali_brightness > 254) dali_brightness = 254;
 
-    ESP_LOGD(TAG, "DALI[%d] B=%.2f (%d)", address_, brightness, dali_brightness);
-    bus->dali.lamp.setBrightness(address_, (uint8_t)dali_brightness);
+    pw.brightness = (uint8_t) dali_brightness;
+    pw.brightness_f = brightness;
 
     // See comment above: optimistically sync group commands to member lamps.
     if ((address_ & ADDR_GROUP_MASK) != 0) {
@@ -318,6 +326,56 @@ void dali::DaliLight::write_state(light::LightState *state) {
         if (tc_supported_) update.color_temp_mired = static_cast<uint16_t>(color_temperature * (dali_tc_warmest_ - dali_tc_coolest_) + dali_tc_coolest_);
         bus->sync_group_member_states(address_ & 0x0F, update);
     }
+
+    schedule_or_send_(pw);
+}
+
+void dali::DaliLight::schedule_or_send_(const PendingBusWrite &pw) {
+    uint32_t now = millis();
+    if (!has_sent_once_ || (now - last_bus_write_ms_) >= DALI_LIGHT_COMMAND_DEBOUNCE_MS) {
+        send_to_bus_(pw);
+        last_bus_write_ms_ = now;
+        has_sent_once_ = true;
+        pending_write_.valid = false;
+    } else {
+        // Too soon since the last command to this address: hold this one and let
+        // loop() flush it once the debounce window elapses. A newer pending write
+        // simply overwrites an older one, so only the latest value is ever sent.
+        pending_write_ = pw;
+    }
+}
+
+void dali::DaliLight::send_to_bus_(const PendingBusWrite &pw) {
+    bus->dali.lamp.setFadeTime(address_, pw.fade_code);
+
+    if (!pw.on) {
+        // Short cut: send power off command
+        //bus->dali.lamp.turnOff(address_); // no fade
+        bus->dali.lamp.setBrightness(address_, 0); // fade
+        return;
+    }
+
+    if (pw.has_color) {
+        ESP_LOGD(TAG, "DALI[%d] Tc=%d", address_, pw.color_temp_mired);
+
+        // IMPORTANT: Do not set start_fade (activate), or the color temperature fade will
+        // be cancelled when we next call setBrightness, and no color change will occur.
+        bus->dali.color.setColorTemperature(address_, pw.color_temp_mired, false);
+    }
+
+    ESP_LOGD(TAG, "DALI[%d] B=%.2f (%d)", address_, pw.brightness_f, pw.brightness);
+    bus->dali.lamp.setBrightness(address_, pw.brightness);
+}
+
+void dali::DaliLight::loop() {
+    if (!pending_write_.valid) return;
+    uint32_t now = millis();
+    if ((now - last_bus_write_ms_) < DALI_LIGHT_COMMAND_DEBOUNCE_MS) return;
+
+    PendingBusWrite pw = pending_write_;
+    pending_write_.valid = false;
+    send_to_bus_(pw);
+    last_bus_write_ms_ = now;
 }
 
 void dali::DaliLight::publish_status_() {

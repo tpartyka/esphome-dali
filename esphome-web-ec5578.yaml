@@ -35,12 +35,25 @@ external_components:
 # Bit-banged 1200 baud DALI bus (master)
 dali:
   id: dali_bus
-  state_poll_interval: 10s
   tx_pin: GPIO4
   rx_pin:
     number: GPIO5
     inverted: true
-  discovery: true                  # Auto-discover devices on the bus
-  initialize_addresses: none       # Auto-assign short addresses if needed ('unassigned' or 'all')
-  expose_dashboard: true
-  dashboard_port: 8080
+  discovery: true                  # Auto-discover devices on the bus. default: false. allowed: true, false
+  initialize_addresses: none       # Auto-assign short addresses. default: none. allowed: none, unassigned, all (also accepts legacy true/false)
+  max_lights: 64                   # Reserved entity slots for discovered lamps. default: 64. allowed: 1-64
+  state_poll_interval: 10s         # How often to poll each lamp's real state (0s disables). default: 15s. allowed: any time period
+  default_fade_in_time: 1s         # Initial fade-in time, snapped to nearest DALI step. default: 1s. allowed: any time period
+  default_fade_out_time: 1s        # Initial fade-out time, snapped to nearest DALI step. default: 1s. allowed: any time period
+  power_on_level: last             # Level after mains power returns. default: last. allowed: last, off, 0-254
+  system_failure_level: last       # Level when the DALI bus fails. default: last. allowed: last, off, 0-254
+  expose_problem: true             # Per-lamp "Status" problem binary_sensor. default: true. allowed: true, false
+  expose_bus_status: true          # "DALI Bus Online" connectivity binary_sensor. default: true. allowed: true, false
+  expose_bus_diagnostics: true     # "DALI Bus Errors"/"DALI Bus Down Events"/"DALI Bus Disconnected"/"DALI Collisions" diagnostics. default: true. allowed: true, false
+  persist_inventory: true          # Persist discovered short-address inventory to flash. default: true. allowed: true, false
+  expose_groups: true               # Expose discovered DALI groups as "DALI Group N" lights. default: true. allowed: true, false
+  max_groups: 16                    # Reserved entity slots for group lights. default: 16. allowed: 1-16
+  expose_scenes: true                # Expose "DALI Scene N" recall/store/clear buttons. default: true. allowed: true, false
+  expose_dashboard: true           # Serve the built-in web dashboard (ESP32 only). default: false. allowed: true, false
+  dashboard_port: 8080             # TCP port for the web dashboard. default: 8080. allowed: any valid port
+  input_devices: false             # Enable push-button input listener + collision avoidance/detection. default: false. allowed: true, false
