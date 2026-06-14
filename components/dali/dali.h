@@ -513,6 +513,7 @@ public:
         fade_time &= 0x0F;
         port.setDtr0(fade_time);
         port.sendControlCommand(short_addr, DaliCommand::SET_FADE_TIME_DTR0);
+        port.setDtr0(0); // Don't leave DTR0 holding a value other commands could misuse
     }
 
     /// @brief Set the fade rate
@@ -523,6 +524,7 @@ public:
         fade_rate &= 0x0F;
         port.setDtr0(fade_rate);
         port.sendControlCommand(short_addr, DaliCommand::SET_FADE_RATE_DTR0);
+        port.setDtr0(0); // Don't leave DTR0 holding a value other commands could misuse
 
         // uint8_t fadetime = port.sendQueryCommand(short_addr, DaliCommand::QUERY_FADE_TIME_FADE_RATE);
         // if ((fadetime & 0x0F) != fade_rate) {
@@ -538,10 +540,12 @@ public:
         if (port.getDtr0(short_addr) != power_on_level) {
             //Serial.println("WARNING: DTR0 not updated!");
             DALI_LOGE("WARNING: DTR0 not updated!");
+            port.setDtr0(0); // Don't leave DTR0 holding a value other commands could misuse
             return;
         }
 
         port.sendControlCommand(short_addr, DaliCommand::SET_POWER_ON_LEVEL_DTR0);
+        port.setDtr0(0); // Don't leave DTR0 holding a value other commands could misuse
 
         auto new_level = port.sendQueryCommand(short_addr, DaliCommand::QUERY_POWER_ON_LEVEL);
         if (new_level != power_on_level) {
@@ -566,9 +570,11 @@ public:
         port.setDtr0(level);
         if (port.getDtr0(short_addr) != level) {
             DALI_LOGE("WARNING: DTR0 not updated!");
+            port.setDtr0(0); // Don't leave DTR0 holding a value other commands could misuse
             return;
         }
         port.sendControlCommand(short_addr, DaliCommand::SET_SYSTEM_FAILURE_LEVEL_DTR0);
+        port.setDtr0(0); // Don't leave DTR0 holding a value other commands could misuse
     }
 
     /// @brief Get the minimum allowable brightness level (usually 1)
