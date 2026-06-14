@@ -10,6 +10,7 @@
 
 #include "esphome/components/web_server_base/web_server_base.h"
 #include "esphome/core/lock_free_queue.h"
+#include "dali_names.h"
 #include <cstdint>
 
 namespace esphome {
@@ -28,9 +29,24 @@ struct DaliPendingAction {
         SceneStore,
         SceneRemove,
         Identify,
+        LampControl,  // set on/off/brightness/color-temp on any lamp or group light
+        Rename,       // set a dashboard-only display name (lamp/group/scene)
+        Discovery,    // run discovery with a given DaliInitMode
     } kind;
     uint8_t target_addr;  // short address, ADDR_BROADCAST, or ADDR_GROUP|group
-    uint8_t value;        // group number (0-15) or scene number (0-15); unused for Identify
+    uint8_t value;        // group/scene number (0-15); for Rename, a NameKind;
+                           // for Discovery, a DaliInitMode; unused for Identify
+
+    // LampControl fields: only fields with their has_* flag set are applied.
+    bool has_on{false};
+    bool on{false};
+    bool has_brightness{false};
+    uint8_t brightness_pct{0};  // 0-100
+    bool has_color_temp{false};
+    uint16_t color_temp_mireds{0};
+
+    // Rename field: fixed-size buffer avoids a heap allocation in the queued struct.
+    char name[dali_names::NAME_LEN]{0};
 };
 
 /// @brief Small built-in web dashboard: lists lamps with live status and lets the
@@ -54,6 +70,11 @@ private:
     void handle_group_action_(AsyncWebServerRequest* request);
     void handle_scene_action_(AsyncWebServerRequest* request);
     void handle_identify_action_(AsyncWebServerRequest* request);
+    void handle_lamp_control_(AsyncWebServerRequest* request);
+    void handle_names_get_(AsyncWebServerRequest* request);
+    void handle_names_set_(AsyncWebServerRequest* request);
+    void handle_discovery_(AsyncWebServerRequest* request);
+    void handle_log_(AsyncWebServerRequest* request);
 
     DaliBusComponent* bus_{nullptr};
     AsyncWebServer* server_{nullptr};
