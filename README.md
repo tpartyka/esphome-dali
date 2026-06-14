@@ -72,6 +72,7 @@ dali:
 | `system_failure_level` | `last` \| `off` \| `0`-`254` | `last` | Level a lamp goes to if it loses DALI bus communication (DALI `SYSTEM FAILURE LEVEL`). |
 | `expose_problem` | bool | `true` | Create a diagnostic "Status" `binary_sensor` per discovered lamp: ON when the lamp is unavailable or reports the DALI `STATUS` lamp-failure bit, OFF when OK. |
 | `expose_bus_status` | bool | `true` | Create a single "DALI Bus Online" connectivity `binary_sensor` reflecting whether the bus itself is responding. |
+| `expose_bus_diagnostics` | bool | `true` | Create software-only line/PSU diagnostic entities: "DALI Bus Errors" and "DALI Bus Down Events" lifetime counters, a "DALI Bus Disconnected" `binary_sensor` (RX stuck high = no PSU/physically disconnected bus), and (when `input_devices` is enabled) a "DALI Collisions" counter from the multi-master collision detector. |
 | `persist_inventory` | bool | `true` | Persist the discovered short-address inventory to flash, so lamp entities exist at boot (as "unavailable" if missing) even before the bus has been re-polled. Only used when `discovery` is enabled. |
 | `expose_groups` | bool | `true` | Auto-discover DALI group membership and expose one optimistic "DALI Group N" light per active group. Only used when `discovery` is enabled. |
 | `max_groups` | int, 1-16 | `16` | Maximum number of group lights (`0`..`max_groups - 1`) `expose_groups` may create. Reserves the matching number of entity slots. |
@@ -147,6 +148,17 @@ bus polling/discovery.
   controls what level a lamp returns to after mains power returns or after a
   DALI bus failure — `last` (keep previous level), `off`, or a raw `0..254`
   level.
+- **Line/PSU diagnostics** (`expose_bus_diagnostics`): software-only
+  diagnostics derived from existing bus-health signals (no extra hardware):
+  - "DALI Bus Errors": lifetime counter of polled lamps that didn't respond.
+  - "DALI Bus Down Events": lifetime counter of bus online→offline
+    transitions.
+  - "DALI Bus Disconnected": ON when the RX line reads stuck high at the
+    start of a reply window — distinguishes a physically disconnected/
+    unpowered bus from devices that are present but not answering.
+  - "DALI Collisions" (only with `input_devices: true`): lifetime counter of
+    multi-master collisions detected on the bit-banged TX (IEC 62386-101),
+    sampled passively while this device releases the bus.
 
 ## Future Work:
 

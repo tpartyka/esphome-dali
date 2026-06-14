@@ -7,7 +7,7 @@ from esphome.core.entity_helpers import register_device_class
 import esphome.codegen as cg
 import esphome.config_validation as cv
 
-AUTO_LOAD = ["light", "output", "button", "number", "binary_sensor", "web_server_base", "json"]
+AUTO_LOAD = ["light", "output", "button", "number", "binary_sensor", "sensor", "web_server_base", "json"]
 
 CONF_DALI_BUS = 'dali_bus'
 CONF_INITIALIZE_ADDRESSES = 'initialize_addresses'
@@ -21,6 +21,7 @@ CONF_POWER_ON_LEVEL = 'power_on_level'
 CONF_SYSTEM_FAILURE_LEVEL = 'system_failure_level'
 CONF_EXPOSE_PROBLEM = 'expose_problem'
 CONF_EXPOSE_BUS_STATUS = 'expose_bus_status'
+CONF_EXPOSE_BUS_DIAGNOSTICS = 'expose_bus_diagnostics'
 CONF_PERSIST_INVENTORY = 'persist_inventory'
 CONF_EXPOSE_GROUPS = 'expose_groups'
 CONF_MAX_GROUPS = 'max_groups'
@@ -54,6 +55,12 @@ DALI_SCENE_NUMBER_COUNT = 1
 # Group-membership controls: Add + Remove buttons, and target-address + group-number.
 DALI_GROUP_BUTTON_COUNT = 2
 DALI_GROUP_NUMBER_COUNT = 2
+# Bus diagnostics: "DALI Bus Errors" + "DALI Bus Down Events" counters, plus
+# "DALI Collisions" (only when input_devices is enabled).
+DALI_DIAG_SENSOR_COUNT = 2
+DALI_DIAG_COLLISION_SENSOR_COUNT = 1
+# Bus diagnostics: "DALI Bus Disconnected" binary_sensor.
+DALI_DIAG_BINARY_SENSOR_COUNT = 1
 
 dali_ns = cg.esphome_ns.namespace('dali')
 dali_lib_ns = cg.global_ns
@@ -104,6 +111,12 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_EXPOSE_PROBLEM, default=True): cv.boolean,
     # Create a single "DALI Bus Online" connectivity sensor (bus-down detection).
     cv.Optional(CONF_EXPOSE_BUS_STATUS, default=True): cv.boolean,
+    # Create software-only line diagnostics: "DALI Bus Errors" and "DALI Bus Down
+    # Events" counters, a "DALI Bus Disconnected" binary_sensor (RX stuck high, i.e.
+    # physically disconnected/no PSU, vs. devices present but not answering), and
+    # (when input_devices is enabled) a "DALI Collisions" counter from the
+    # multi-master collision detector.
+    cv.Optional(CONF_EXPOSE_BUS_DIAGNOSTICS, default=True): cv.boolean,
     # Persist the discovered short-address inventory to flash, so lamp entities exist
     # at boot even if the bus is briefly unreachable, and removed lamps are tracked as
     # "missing" (unavailable) instead of vanishing. Only used when discovery is on.
@@ -130,6 +143,11 @@ async def to_code(config: OrderedDict):
     var = cg.new_Pvariable(config[CONF_ID])
     bus = await cg.register_component(var, config)
 
+    # Input-device listener: enabled by `input_devices: true` or implicitly when an
+    # on_input_frame automation is defined. Computed up front since it also affects
+    # the bus-diagnostics sensor count below.
+    input_devices_enabled = config[CONF_INPUT_DEVICES] or CONF_ON_INPUT_FRAME in config
+
     rx_pin = await cg.gpio_pin_expression(config[CONF_RX_PIN])
     cg.add(var.set_rx_pin(rx_pin))
     
@@ -143,6 +161,7 @@ async def to_code(config: OrderedDict):
     cg.add(var.set_system_failure_level(config[CONF_SYSTEM_FAILURE_LEVEL]))
     cg.add(var.set_expose_problem(config[CONF_EXPOSE_PROBLEM]))
     cg.add(var.set_expose_bus_status(config[CONF_EXPOSE_BUS_STATUS]))
+    cg.add(var.set_expose_bus_diagnostics(config[CONF_EXPOSE_BUS_DIAGNOSTICS]))
     cg.add(var.set_persist_inventory(config[CONF_PERSIST_INVENTORY]))
     cg.add(var.set_expose_groups(config[CONF_EXPOSE_GROUPS]))
     cg.add(var.set_expose_scenes(config[CONF_EXPOSE_SCENES]))
@@ -169,6 +188,17 @@ async def to_code(config: OrderedDict):
             CORE.register_platform_component("binary_sensor", var)
     if config[CONF_EXPOSE_BUS_STATUS]:
         CORE.register_platform_component("binary_sensor", var)
+
+    # Bus diagnostics: "DALI Bus Disconnected" binary_sensor, plus "DALI Bus Errors" /
+    # "DALI Bus Down Events" sensors, and "DALI Collisions" if input devices are enabled.
+    if config[CONF_EXPOSE_BUS_DIAGNOSTICS]:
+        for _ in range(DALI_DIAG_BINARY_SENSOR_COUNT):
+            CORE.register_platform_component("binary_sensor", var)
+        for _ in range(DALI_DIAG_SENSOR_COUNT):
+            CORE.register_platform_component("sensor", var)
+        if input_devices_enabled:
+            for _ in range(DALI_DIAG_COLLISION_SENSOR_COUNT):
+                CORE.register_platform_component("sensor", var)
 
     # The component auto-creates the "Run DALI Discovery" and "Reboot" buttons with
     # no YAML (see create_discovery_button / create_reboot_button). Each
@@ -225,9 +255,7 @@ async def to_code(config: OrderedDict):
     if init_mode != 'none':
         cg.add(var.do_initialize_addresses(INIT_MODES[init_mode]))
 
-    # Input-device listener: enabled by `input_devices: true` or implicitly when an
-    # on_input_frame automation is defined.
-    if config[CONF_INPUT_DEVICES] or CONF_ON_INPUT_FRAME in config:
+    if input_devices_enabled:
         cg.add(var.do_input_devices())
 
     for conf in config.get(CONF_ON_INPUT_FRAME, []):

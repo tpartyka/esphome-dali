@@ -17,6 +17,10 @@
 #ifdef USE_BINARY_SENSOR
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #endif
+#ifdef USE_SENSOR
+#include "esphome/components/sensor/sensor.h"
+#endif
+#include "dali_tx_collision.h"
 
 //static const char *const TAG = "dali";
 static const bool DEBUG_LOG_RXTX = true; // NOTE: Will probably trigger WDT
@@ -254,6 +258,21 @@ public:
 };
 #endif  // USE_BINARY_SENSOR
 
+#ifdef USE_SENSOR
+// Auto-created (no YAML) diagnostic sensor for lifetime bus-health counters
+// ("DALI Bus Errors", "DALI Bus Down Events", "DALI Collisions").
+class DaliDiagSensor : public esphome::sensor::Sensor, public esphome::Component {
+public:
+    void configure_dynamic_entity(const char* name, const char* object_id) {
+        uint32_t entity_fields =
+            (static_cast<uint32_t>(esphome::ENTITY_CATEGORY_DIAGNOSTIC) << esphome::ENTITY_FIELD_ENTITY_CATEGORY_SHIFT);
+        this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), entity_fields);
+        this->set_state_class(esphome::sensor::STATE_CLASS_TOTAL_INCREASING);
+        this->set_accuracy_decimals(0);
+    }
+};
+#endif  // USE_SENSOR
+
 }  // namespace
 
 void DaliBusComponent::setup() {
@@ -275,6 +294,7 @@ void DaliBusComponent::setup() {
     create_scene_controls();
     create_group_controls();
     create_bus_sensor();
+    create_diag_sensors();
 
     // Passive input-device listener (Part 103 push buttons / sensors).
     if (m_input_devices) {
@@ -997,6 +1017,73 @@ void DaliBusComponent::create_bus_sensor() {
 static const uint8_t  DALI_BUS_DOWN_ROUNDS = 2;        // consecutive all-NACK rounds -> down
 static const uint32_t DALI_BUS_DOWN_PROBE_MS = 5000;   // slow recovery probing while down
 
+void DaliBusComponent::create_diag_sensors() {
+    if (!m_expose_bus_diagnostics) return;
+
+#ifdef USE_BINARY_SENSOR
+    auto* ds = new DaliDiagBinarySensor {};
+    ds->configure_dynamic_entity("DALI Bus Disconnected", "dali_bus_disconnected");
+    App.register_binary_sensor(ds);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(ds);
+    ds->publish_initial_state(false);
+    m_disconnected_sensor_ = ds;
+#endif
+
+#ifdef USE_SENSOR
+    auto* errs = new DaliDiagSensor {};
+    errs->configure_dynamic_entity("DALI Bus Errors", "dali_bus_errors");
+    App.register_sensor(errs);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(errs);
+    errs->publish_state(0);
+    m_error_sensor_ = errs;
+
+    auto* downs = new DaliDiagSensor {};
+    downs->configure_dynamic_entity("DALI Bus Down Events", "dali_bus_down_events");
+    App.register_sensor(downs);
+    static_cast<AppRegistrationAccessor&>(App).register_component_(downs);
+    downs->publish_state(0);
+    m_bus_down_sensor_ = downs;
+
+    if (m_input_devices) {
+        auto* colls = new DaliDiagSensor {};
+        colls->configure_dynamic_entity("DALI Collisions", "dali_collisions");
+        App.register_sensor(colls);
+        static_cast<AppRegistrationAccessor&>(App).register_component_(colls);
+        colls->publish_state(0);
+        m_collision_sensor_ = colls;
+    }
+#endif
+}
+
+void DaliBusComponent::note_poll_error_() {
+    m_error_count_++;
+#ifdef USE_SENSOR
+    if (m_error_sensor_ != nullptr) m_error_sensor_->publish_state(m_error_count_);
+#endif
+}
+
+void DaliBusComponent::note_bus_down_() {
+    m_bus_down_count_++;
+#ifdef USE_SENSOR
+    if (m_bus_down_sensor_ != nullptr) m_bus_down_sensor_->publish_state(m_bus_down_count_);
+#endif
+}
+
+void DaliBusComponent::note_disconnected_(bool disconnected) {
+    if (disconnected == m_disconnected_) return;
+    m_disconnected_ = disconnected;
+#ifdef USE_BINARY_SENSOR
+    if (m_disconnected_sensor_ != nullptr) m_disconnected_sensor_->publish_state(disconnected);
+#endif
+}
+
+void DaliBusComponent::note_collision_() {
+    m_collision_count_++;
+#ifdef USE_SENSOR
+    if (m_collision_sensor_ != nullptr) m_collision_sensor_->publish_state(m_collision_count_);
+#endif
+}
+
 void DaliBusComponent::update_bus_health_(bool any_response) {
     if (any_response) {
         m_bus_down_rounds_ = 0;
@@ -1012,6 +1099,7 @@ void DaliBusComponent::update_bus_health_(bool any_response) {
     if (m_bus_online_ && m_bus_down_rounds_ >= DALI_BUS_DOWN_ROUNDS) {
         m_bus_online_ = false;
         if (m_bus_sensor_ != nullptr) m_bus_sensor_->publish_state(false);
+        note_bus_down_();
         DALI_LOGW("DALI bus down: no control gear answered for %u poll rounds", m_bus_down_rounds_);
     }
 }
@@ -1073,6 +1161,8 @@ void DaliBusComponent::loop() {
                 // Recover immediately on the first answer rather than waiting for the
                 // round to finish (important during the slow bus-down probe cadence).
                 if (!m_bus_online_) update_bus_health_(true);
+            } else {
+                note_poll_error_();
             }
             m_poll_index++;
         }
@@ -1104,12 +1194,32 @@ void DaliBusComponent::dump_config() {
 #define HALF_BIT_PERIOD 416
 #define BIT_PERIOD 833
 
+// Collision sampling splits each half-bit's delay around a single digital_read(),
+// so the total delay (and thus the Manchester bit period) is unchanged.
+#define HALF_BIT_PERIOD_PRE  (HALF_BIT_PERIOD - 6) / 2
+#define HALF_BIT_PERIOD_POST (HALF_BIT_PERIOD - 6) - HALF_BIT_PERIOD_PRE
+
+void DaliBusComponent::check_collision_(bool bit, int half) {
+    if (!m_input_devices) return;
+    // rx_pin is configured `inverted: true`, matching the TX convention where
+    // HIGH = assert (drive bus to 0V): digital_read() == HIGH means the bus
+    // reads as asserted.
+    bool rx_asserted = (m_rxPin->digital_read() == HIGH);
+    if (dali_tx::is_collision(bit, half, rx_asserted)) {
+        note_collision_();
+    }
+}
+
 void DaliBusComponent::writeBit(bool bit) {
     // Output is inverted: HIGH pulls the bus to 0V.
     m_txPin->digital_write(bit ? HIGH : LOW);
-    delayMicroseconds(HALF_BIT_PERIOD - 6);
+    delayMicroseconds(HALF_BIT_PERIOD_PRE);
+    check_collision_(bit, 0);
+    delayMicroseconds(HALF_BIT_PERIOD_POST);
     m_txPin->digital_write(bit ? LOW : HIGH);
-    delayMicroseconds(HALF_BIT_PERIOD - 6);
+    delayMicroseconds(HALF_BIT_PERIOD_PRE);
+    check_collision_(bit, 1);
+    delayMicroseconds(HALF_BIT_PERIOD_POST);
 }
 
 void DaliBusComponent::writeByte(uint8_t b) {
@@ -1183,8 +1293,10 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
         if (DEBUG_LOG_RXTX) {
             DALI_LOGD("RX: 00 (NACK, line stuck high)");
         }
+        note_disconnected_(true);
         return 0;
     }
+    note_disconnected_(false);
 
     // Wait for the reply's START bit. Bounded by timeout_ms so a silent/stuck-idle bus
     // returns a NACK instead of spinning forever (see DALI_BACKWARD_TIMEOUT_MS).
