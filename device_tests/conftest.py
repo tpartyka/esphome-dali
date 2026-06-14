@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 from aioesphomeapi import APIClient
@@ -60,6 +61,22 @@ def entities_by_name(api_client, event_loop):
 @pytest.fixture(scope="session")
 def dashboard_url():
     return config.DASHBOARD_URL
+
+
+@pytest.fixture(scope="session", autouse=True)
+def turn_off_lamps_after_session(api_client, entities_by_name):
+    yield
+    for addr in config.LAMP_ADDRS:
+        entity = entities_by_name.get(f"DALI Light {addr}")
+        if entity is not None:
+            api_client.light_command(key=entity.key, state=False)
+    for group in config.GROUPS:
+        entity = entities_by_name.get(f"DALI Group {group}")
+        if entity is not None:
+            api_client.light_command(key=entity.key, state=False)
+    # Give the device's debounce window time to flush the off commands to
+    # the bus before the api_client fixture disconnects.
+    time.sleep(1.0)
 
 
 def get_light(entities_by_name: dict, name: str):
