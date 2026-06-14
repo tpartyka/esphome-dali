@@ -53,6 +53,11 @@ def test_scene_recall_button(api_client, entities_by_name, scene):
     time.sleep(SETTLE_S)
 
 
+# Identify blinks BLINKS*2 times (esphome_dali.cpp's process_identify_, 3 blinks
+# x 2 steps) at STEP_MS=400ms each, then restores the lamp's pre-blink level.
+IDENTIFY_SEQUENCE_S = 3.0
+
+
 def test_identify(dashboard_url):
     addr = config.LAMP_ADDRS[0]
     resp = httpx.post(f"{dashboard_url}/api/identify", params={"addr": addr}, timeout=5)
@@ -60,6 +65,10 @@ def test_identify(dashboard_url):
     # handlers use 200 (queued) / 409 (validation error or busy).
     assert resp.status_code == 200
     assert resp.text == "queued"
+    # Wait for the blink sequence to finish and restore the lamp's level before
+    # any later test sends a real command to the same address -- otherwise the
+    # identify restore can race with and overwrite that command.
+    time.sleep(IDENTIFY_SEQUENCE_S)
 
 
 def test_dashboard_lamps_endpoint(dashboard_url):
