@@ -20,6 +20,8 @@
 #ifdef USE_SENSOR
 #include "esphome/components/sensor/sensor.h"
 #endif
+#include "dali_bus_health.h"
+#include "dali_inventory.h"
 #include "dali_tx_collision.h"
 
 //static const char *const TAG = "dali";
@@ -560,7 +562,7 @@ void DaliBusComponent::create_entities_for_present_devices() {
         delay(1);  // yield to ESP stack
         esp_task_wdt_reset();
         bool present = dali.isDevicePresent(addr);
-        if (present) present_mask |= (1ULL << addr);
+        if (present) present_mask = dali_inventory::inventory_set(present_mask, addr);
         if (m_addresses[addr]) continue;  // already has an entity (discovery, static YAML, or restored)
         if (present) {
             m_addresses[addr] = 0xFFFFFF;  // mark created (long address unknown here)
@@ -588,7 +590,7 @@ void DaliBusComponent::restore_inventory_() {
     }
     uint8_t restored = 0;
     for (uint8_t addr = 0; addr <= ADDR_SHORT_MAX; addr++) {
-        if (!(mask & (1ULL << addr))) continue;
+        if (!dali_inventory::inventory_has(mask, addr)) continue;
         if (m_addresses[addr]) continue;  // already created (static YAML)
         m_addresses[addr] = 0xFFFFFF;
         create_light_component(addr, 0xFFFFFF);  // setup_state() tracks it as missing if absent now
@@ -1085,19 +1087,14 @@ void DaliBusComponent::note_collision_() {
 }
 
 void DaliBusComponent::update_bus_health_(bool any_response) {
-    if (any_response) {
-        m_bus_down_rounds_ = 0;
-        if (!m_bus_online_) {
-            m_bus_online_ = true;
-            if (m_bus_sensor_ != nullptr) m_bus_sensor_->publish_state(true);
-            DALI_LOGI("DALI bus recovered");
-            on_bus_recovered_();
-        }
-        return;
-    }
-    if (m_bus_down_rounds_ < 255) m_bus_down_rounds_++;
-    if (m_bus_online_ && m_bus_down_rounds_ >= DALI_BUS_DOWN_ROUNDS) {
-        m_bus_online_ = false;
+    bool transitioned = dali_bus_health::bus_health_on_round(
+        m_bus_down_rounds_, any_response, m_bus_online_, DALI_BUS_DOWN_ROUNDS);
+    if (!transitioned) return;
+    if (m_bus_online_) {
+        if (m_bus_sensor_ != nullptr) m_bus_sensor_->publish_state(true);
+        DALI_LOGI("DALI bus recovered");
+        on_bus_recovered_();
+    } else {
         if (m_bus_sensor_ != nullptr) m_bus_sensor_->publish_state(false);
         note_bus_down_();
         DALI_LOGW("DALI bus down: no control gear answered for %u poll rounds", m_bus_down_rounds_);

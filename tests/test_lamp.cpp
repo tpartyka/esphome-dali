@@ -64,12 +64,15 @@ TEST(set_fade_time_writes_dtr0_then_sends_command_twice) {
 
     lamp.setFadeTime(2, 0x0A);
 
-    CHECK_EQ(port.sent.size(), 3u);
+    CHECK_EQ(port.sent.size(), 4u);
     CHECK_HEX_EQ(port.sent[0].address, static_cast<uint8_t>(DaliSpecialCommand::DTR0_DATA));
     CHECK_HEX_EQ(port.sent[0].data, 0x0A);
     CHECK(port.sent[1] == port.sent[2]);
     CHECK_HEX_EQ(port.sent[1].address, (2 << 1) | DALI_COMMAND);
     CHECK_HEX_EQ(port.sent[1].data, static_cast<uint8_t>(DaliCommand::SET_FADE_TIME_DTR0));
+    // DTR0 is reset afterwards so it doesn't linger for other commands to misuse.
+    CHECK_HEX_EQ(port.sent[3].address, static_cast<uint8_t>(DaliSpecialCommand::DTR0_DATA));
+    CHECK_HEX_EQ(port.sent[3].data, 0x00);
 }
 
 TEST(set_fade_time_masks_to_4_bits) {
@@ -87,11 +90,14 @@ TEST(set_fade_rate_writes_dtr0_then_sends_command_twice) {
 
     lamp.setFadeRate(2, 0x05);
 
-    CHECK_EQ(port.sent.size(), 3u);
+    CHECK_EQ(port.sent.size(), 4u);
     CHECK_HEX_EQ(port.sent[0].address, static_cast<uint8_t>(DaliSpecialCommand::DTR0_DATA));
     CHECK_HEX_EQ(port.sent[0].data, 0x05);
     CHECK(port.sent[1] == port.sent[2]);
     CHECK_HEX_EQ(port.sent[1].data, static_cast<uint8_t>(DaliCommand::SET_FADE_RATE_DTR0));
+    // DTR0 is reset afterwards so it doesn't linger for other commands to misuse.
+    CHECK_HEX_EQ(port.sent[3].address, static_cast<uint8_t>(DaliSpecialCommand::DTR0_DATA));
+    CHECK_HEX_EQ(port.sent[3].data, 0x00);
 }
 
 // --- Power-on level: write DTR0, verify, configure, verify again ------------
@@ -107,8 +113,8 @@ TEST(set_power_on_level_full_sequence_when_dtr0_confirms) {
 
     lamp.setPowerOnLevel(4, 200);
 
-    // setDtr0, getDtr0(query), SET_POWER_ON_LEVEL_DTR0 x2, QUERY_POWER_ON_LEVEL
-    CHECK_EQ(port.sent.size(), 5u);
+    // setDtr0, getDtr0(query), SET_POWER_ON_LEVEL_DTR0 x2, setDtr0(0) reset, QUERY_POWER_ON_LEVEL
+    CHECK_EQ(port.sent.size(), 6u);
     CHECK_HEX_EQ(port.sent[0].address, static_cast<uint8_t>(DaliSpecialCommand::DTR0_DATA));
     CHECK_HEX_EQ(port.sent[0].data, 200);
 
@@ -117,7 +123,11 @@ TEST(set_power_on_level_full_sequence_when_dtr0_confirms) {
     CHECK(port.sent[2] == port.sent[3]);
     CHECK_HEX_EQ(port.sent[2].data, static_cast<uint8_t>(DaliCommand::SET_POWER_ON_LEVEL_DTR0));
 
-    CHECK_HEX_EQ(port.sent[4].data, static_cast<uint8_t>(DaliCommand::QUERY_POWER_ON_LEVEL));
+    // DTR0 is reset afterwards so it doesn't linger for other commands to misuse.
+    CHECK_HEX_EQ(port.sent[4].address, static_cast<uint8_t>(DaliSpecialCommand::DTR0_DATA));
+    CHECK_HEX_EQ(port.sent[4].data, 0x00);
+
+    CHECK_HEX_EQ(port.sent[5].data, static_cast<uint8_t>(DaliCommand::QUERY_POWER_ON_LEVEL));
 }
 
 TEST(set_power_on_level_aborts_if_dtr0_readback_mismatches) {
@@ -128,8 +138,10 @@ TEST(set_power_on_level_aborts_if_dtr0_readback_mismatches) {
 
     lamp.setPowerOnLevel(4, 200);
 
-    // Only setDtr0 + the readback query were sent; nothing further.
-    CHECK_EQ(port.sent.size(), 2u);
+    // setDtr0, the readback query, and a setDtr0(0) reset were sent; nothing further.
+    CHECK_EQ(port.sent.size(), 3u);
+    CHECK_HEX_EQ(port.sent[2].address, static_cast<uint8_t>(DaliSpecialCommand::DTR0_DATA));
+    CHECK_HEX_EQ(port.sent[2].data, 0x00);
 }
 
 // --- System failure level: write DTR0, verify, configure (no final verify) --
@@ -142,12 +154,15 @@ TEST(set_system_failure_level_sequence_when_dtr0_confirms) {
 
     lamp.setSystemFailureLevel(4, 254);
 
-    // setDtr0, getDtr0(query), SET_SYSTEM_FAILURE_LEVEL_DTR0 x2
-    CHECK_EQ(port.sent.size(), 4u);
+    // setDtr0, getDtr0(query), SET_SYSTEM_FAILURE_LEVEL_DTR0 x2, setDtr0(0) reset
+    CHECK_EQ(port.sent.size(), 5u);
     CHECK_HEX_EQ(port.sent[0].data, 254);
     CHECK_HEX_EQ(port.sent[1].data, static_cast<uint8_t>(DaliCommand::QUERY_CONTENT_DTR0));
     CHECK(port.sent[2] == port.sent[3]);
     CHECK_HEX_EQ(port.sent[2].data, static_cast<uint8_t>(DaliCommand::SET_SYSTEM_FAILURE_LEVEL_DTR0));
+    // DTR0 is reset afterwards so it doesn't linger for other commands to misuse.
+    CHECK_HEX_EQ(port.sent[4].address, static_cast<uint8_t>(DaliSpecialCommand::DTR0_DATA));
+    CHECK_HEX_EQ(port.sent[4].data, 0x00);
 }
 
 TEST(set_system_failure_level_aborts_if_dtr0_readback_mismatches) {
@@ -158,7 +173,10 @@ TEST(set_system_failure_level_aborts_if_dtr0_readback_mismatches) {
 
     lamp.setSystemFailureLevel(4, 254);
 
-    CHECK_EQ(port.sent.size(), 2u);
+    // setDtr0, the readback query, and a setDtr0(0) reset were sent; nothing further.
+    CHECK_EQ(port.sent.size(), 3u);
+    CHECK_HEX_EQ(port.sent[2].address, static_cast<uint8_t>(DaliSpecialCommand::DTR0_DATA));
+    CHECK_HEX_EQ(port.sent[2].data, 0x00);
 }
 
 // --- Min/Max level: write DTR0, verify, configure ----------------------------

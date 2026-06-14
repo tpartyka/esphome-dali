@@ -1,6 +1,8 @@
 
 #include <esphome.h>
 #include <cmath>
+#include "dali_availability.h"
+#include "dali_debounce.h"
 #include "esphome_dali_light.h"
 #include "esphome/core/log.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
@@ -106,11 +108,11 @@ void dali::DaliLight::setup_state(light::LightState *state) {
 
             if (this->fade_rate_.has_value()) {
                 ESP_LOGD(TAG, "Setting fade rate: %d", this->fade_rate_.value());
-                bus->dali.lamp.setFadeRate(0, this->fade_rate_.value());
+                bus->dali.lamp.setFadeRate(address_, this->fade_rate_.value());
             }
             if (this->fade_time_.has_value()) {
                 ESP_LOGD(TAG, "Setting fade time: %d", this->fade_time_.value());
-                bus->dali.lamp.setFadeTime(0, this->fade_time_.value());
+                bus->dali.lamp.setFadeTime(address_, this->fade_time_.value());
             }
 
             // bus->dali.lamp.setMinLevel(address_, 1);
@@ -332,7 +334,7 @@ void dali::DaliLight::write_state(light::LightState *state) {
 
 void dali::DaliLight::schedule_or_send_(const PendingBusWrite &pw) {
     uint32_t now = millis();
-    if (!has_sent_once_ || (now - last_bus_write_ms_) >= DALI_LIGHT_COMMAND_DEBOUNCE_MS) {
+    if (dali_debounce::debounce_should_send_now(now, last_bus_write_ms_, DALI_LIGHT_COMMAND_DEBOUNCE_MS, has_sent_once_)) {
         send_to_bus_(pw);
         last_bus_write_ms_ = now;
         has_sent_once_ = true;
@@ -370,7 +372,7 @@ void dali::DaliLight::send_to_bus_(const PendingBusWrite &pw) {
 void dali::DaliLight::loop() {
     if (!pending_write_.valid) return;
     uint32_t now = millis();
-    if ((now - last_bus_write_ms_) < DALI_LIGHT_COMMAND_DEBOUNCE_MS) return;
+    if (!dali_debounce::debounce_should_flush(now, last_bus_write_ms_, DALI_LIGHT_COMMAND_DEBOUNCE_MS)) return;
 
     PendingBusWrite pw = pending_write_;
     pending_write_.valid = false;
@@ -403,22 +405,24 @@ bool dali::DaliLight::poll_and_publish() {
 
     // --- Availability -------------------------------------------------------
     bool present = bus->dali.isDevicePresent(this->address_);
+    dali_availability::AvailabilityState avail{this->miss_count_, this->available_, this->recovery_config_done_};
     if (!present) {
-        if (this->miss_count_ < 255) this->miss_count_++;
-        if (this->available_ && this->miss_count_ >= DALI_AVAIL_MISS_THRESHOLD) {
-            this->available_ = false;
-            this->recovery_config_done_ = false;  // re-apply config when it returns
+        if (dali_availability::availability_on_missing(avail, DALI_AVAIL_MISS_THRESHOLD)) {
             this->publish_status_();
             ESP_LOGW(TAG, "DALI[%d] not responding -> unavailable", this->address_);
         }
+        this->miss_count_ = avail.miss_count;
+        this->available_ = avail.available;
+        this->recovery_config_done_ = avail.recovery_config_done;
         return false;  // probed, no answer — hold last state, count against bus health
     }
-    this->miss_count_ = 0;
-    if (!this->available_) {
-        this->available_ = true;
+    if (dali_availability::availability_on_present(avail)) {
         this->publish_status_();
         ESP_LOGI(TAG, "DALI[%d] responding again -> available", this->address_);
     }
+    this->miss_count_ = avail.miss_count;
+    this->available_ = avail.available;
+    this->recovery_config_done_ = avail.recovery_config_done;
     if (!this->recovery_config_done_) {
         // Device recovered (e.g. after a power cut) — restore our configuration.
         this->apply_recovery_config_();

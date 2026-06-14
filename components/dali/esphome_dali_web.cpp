@@ -210,6 +210,11 @@ void DaliWebDashboard::begin(uint16_t port, DaliBusComponent* bus) {
     server_->begin();
 }
 
+// NOTE: ESPHome's web_server_idf AsyncWebServerRequest::init_response_() only maps
+// status codes 200/404/409 to their real HTTP status lines; any other code (202,
+// 400, 503, ...) is sent to the client as a 500 even though the body is correct.
+// POST handlers below therefore only use 200 (success/queued) and 409
+// (validation error / busy) so clients see an accurate status.
 bool DaliWebDashboard::canHandle(AsyncWebServerRequest* request) const {
     return true;
 }
@@ -265,18 +270,18 @@ void DaliWebDashboard::handle_lamps_(AsyncWebServerRequest* request) {
 
 void DaliWebDashboard::handle_group_action_(AsyncWebServerRequest* request) {
     if (!request->hasArg("addr") || !request->hasArg("group") || !request->hasArg("action")) {
-        request->send(400, "text/plain", "missing addr/group/action");
+        request->send(409, "text/plain", "missing addr/group/action");
         return;
     }
     int addr = atoi(request->arg("addr").c_str());
     int group = atoi(request->arg("group").c_str());
     std::string action = request->arg("action");
     if (addr < 0 || addr > ADDR_SHORT_MAX || group < 0 || group > 15) {
-        request->send(400, "text/plain", "addr/group out of range");
+        request->send(409, "text/plain", "addr/group out of range");
         return;
     }
     if (action != "add" && action != "remove") {
-        request->send(400, "text/plain", "action must be add or remove");
+        request->send(409, "text/plain", "action must be add or remove");
         return;
     }
 
@@ -286,20 +291,20 @@ void DaliWebDashboard::handle_group_action_(AsyncWebServerRequest* request) {
     pending->value = (uint8_t) group;
     if (!queue_.push(pending)) {
         delete pending;
-        request->send(503, "text/plain", "busy, try again");
+        request->send(409, "text/plain", "busy, try again");
         return;
     }
-    request->send(202, "text/plain", "queued");
+    request->send(200, "text/plain", "queued");
 }
 
 void DaliWebDashboard::handle_scene_action_(AsyncWebServerRequest* request) {
     if (!request->hasArg("scene") || !request->hasArg("target") || !request->hasArg("action")) {
-        request->send(400, "text/plain", "missing scene/target/action");
+        request->send(409, "text/plain", "missing scene/target/action");
         return;
     }
     int scene = atoi(request->arg("scene").c_str());
     if (scene < 0 || scene > 15) {
-        request->send(400, "text/plain", "scene out of range");
+        request->send(409, "text/plain", "scene out of range");
         return;
     }
 
@@ -310,19 +315,19 @@ void DaliWebDashboard::handle_scene_action_(AsyncWebServerRequest* request) {
     } else if (target.rfind("group:", 0) == 0) {
         int g = atoi(target.c_str() + 6);
         if (g < 0 || g > 15) {
-            request->send(400, "text/plain", "bad group target");
+            request->send(409, "text/plain", "bad group target");
             return;
         }
         target_addr = (uint8_t) (ADDR_GROUP | g);
     } else if (target.rfind("lamp:", 0) == 0) {
         int a = atoi(target.c_str() + 5);
         if (a < 0 || a > ADDR_SHORT_MAX) {
-            request->send(400, "text/plain", "bad lamp target");
+            request->send(409, "text/plain", "bad lamp target");
             return;
         }
         target_addr = (uint8_t) a;
     } else {
-        request->send(400, "text/plain", "bad target");
+        request->send(409, "text/plain", "bad target");
         return;
     }
 
@@ -332,37 +337,37 @@ void DaliWebDashboard::handle_scene_action_(AsyncWebServerRequest* request) {
     else if (action == "store") kind = DaliPendingAction::Kind::SceneStore;
     else if (action == "remove") kind = DaliPendingAction::Kind::SceneRemove;
     else {
-        request->send(400, "text/plain", "bad action");
+        request->send(409, "text/plain", "bad action");
         return;
     }
 
     auto* pending = new DaliPendingAction{kind, target_addr, (uint8_t) scene};
     if (!queue_.push(pending)) {
         delete pending;
-        request->send(503, "text/plain", "busy, try again");
+        request->send(409, "text/plain", "busy, try again");
         return;
     }
-    request->send(202, "text/plain", "queued");
+    request->send(200, "text/plain", "queued");
 }
 
 void DaliWebDashboard::handle_identify_action_(AsyncWebServerRequest* request) {
     if (!request->hasArg("addr")) {
-        request->send(400, "text/plain", "missing addr");
+        request->send(409, "text/plain", "missing addr");
         return;
     }
     int addr = atoi(request->arg("addr").c_str());
     if (addr < 0 || addr > ADDR_SHORT_MAX) {
-        request->send(400, "text/plain", "addr out of range");
+        request->send(409, "text/plain", "addr out of range");
         return;
     }
 
     auto* pending = new DaliPendingAction{DaliPendingAction::Kind::Identify, (uint8_t) addr, 0};
     if (!queue_.push(pending)) {
         delete pending;
-        request->send(503, "text/plain", "busy, try again");
+        request->send(409, "text/plain", "busy, try again");
         return;
     }
-    request->send(202, "text/plain", "queued");
+    request->send(200, "text/plain", "queued");
 }
 
 void DaliWebDashboard::process_pending_actions() {

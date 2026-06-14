@@ -20,10 +20,32 @@ cd tests && make clean  # remove build artifacts
 # Standalone PlatformIO build (AVR example app in src/, uses components/dali
 # as a library)
 pio run
+
+# Device regression suite (pytest + aioesphomeapi + web dashboard REST API),
+# run against real hardware before merging device-facing changes
+pip install -r device_tests/requirements.txt
+pytest device_tests -m functional                    # every device-facing change
+pytest device_tests -m "functional or performance"   # before merging feature work
+pytest device_tests -m stability --runslow           # periodic/pre-release, needs USB serial
 ```
 
 `esphome-web-ec5578.yaml` references `!secret wifi_ssid`/`wifi_password` from
 a gitignored `secrets.yaml` — never commit real credentials.
+
+### When to run which test tier
+
+- **Always** (no hardware): `cd tests && make run` — the host suite covers
+  the dual-arch core plus the framework-agnostic logic extracted from the
+  ESPHome side (debounce, availability, bus health, inventory — see below).
+  Run this on every change.
+- **Device-facing changes** (entities, web dashboard, light driver, recovery):
+  `pytest device_tests -m functional` against the running device.
+- **Before merging feature work** that touches timing/coalescing or polling:
+  add `-m "functional or performance"` (the performance tier needs
+  `DALI_SERIAL_PORT` set to count TX frames on the wire).
+- **Periodically / pre-release**: `pytest device_tests -m stability --runslow`
+  — a flood test with a serial crash/watchdog watch (see
+  `device_tests/README.md`).
 
 ## Architecture
 
@@ -81,6 +103,20 @@ GET handlers read cached state only. POST handlers (group changes, scene
 actions, identify) enqueue a pending action that is drained on the next
 `DaliBusComponent::loop()` iteration, because the bit-banged DALI bus is not
 thread-safe and must only be touched from the main loop.
+
+### Extracting pure logic for host testing
+
+ESPHome-side decision logic that doesn't need ESPHome types is pulled out into
+small `dali_*.h` headers under `components/dali/` (e.g. `dali_debounce.h`,
+`dali_availability.h`, `dali_bus_health.h`, `dali_inventory.h`), each in its
+own namespace (`dali_debounce`, `dali_availability`, etc. — never a top-level
+`dali` namespace, which collides with `esphome::dali`). The ESPHome `.cpp`
+calls into these helpers and keeps only the ESPHome-specific glue (state
+members, logging, sensor publishing); each header has a matching
+`tests/test_*.cpp` with table-driven cases against `framework.h`, registered
+in `tests/Makefile`'s `SOURCES`. This mirrors the existing
+`dali_tx_collision.h`/`dali_tx` pattern below — follow it for any new pure
+logic so it's covered by the host suite.
 
 ### Collision avoidance
 
