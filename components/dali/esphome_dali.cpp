@@ -1132,6 +1132,9 @@ void DaliBusComponent::loop() {
     for (auto* light : m_dynamic_lights) {
         light->loop();
     }
+    for (auto* light : m_command_lights) {
+        light->loop();
+    }
 
     // Reflect external lamp changes (broadcast, other controllers) back into HA by
     // polling real device state. One device per tick, round-robin, so each is polled

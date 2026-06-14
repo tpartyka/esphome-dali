@@ -24,6 +24,19 @@ struct GroupStateUpdate {
     optional<uint16_t> color_temp_mired;
 };
 
+/// @brief A bus command computed by write_state(), either sent immediately or
+/// held by the debounce logic in loop() until DALI_LIGHT_COMMAND_DEBOUNCE_MS
+/// has elapsed since the last command sent to this light's address.
+struct PendingBusWrite {
+    bool valid{false};
+    bool on{false};
+    uint8_t brightness{0};
+    float brightness_f{0.0f};
+    bool has_color{false};
+    uint16_t color_temp_mired{0};
+    uint8_t fade_code{0};
+};
+
 class DaliLight : public light::LightOutput, public Component {
  public:
     DaliLight(DaliBusComponent* parent)
@@ -47,6 +60,10 @@ class DaliLight : public light::LightOutput, public Component {
 
     void setup_state(light::LightState *state) override;
     void write_state(light::LightState *state) override;
+
+    /// @brief Flushes a debounced bus command once DALI_LIGHT_COMMAND_DEBOUNCE_MS
+    /// has elapsed since the last one (see write_state()/schedule_or_send_()).
+    void loop() override;
 
     /// @brief Poll the lamp's real availability + on/off + brightness and publish to
     /// Home Assistant. Reflects external changes and marks the lamp unavailable when
@@ -149,7 +166,15 @@ class DaliLight : public light::LightOutput, public Component {
     float initial_color_temp_{1.0f};
     bool initial_has_brightness_{false};
     bool initial_has_color_temp_{false};
-    
+
+    // Command debounce/coalescing: rapid successive write_state() calls (e.g. a
+    // dragged brightness slider) are coalesced into a single bus command, sent
+    // at most every DALI_LIGHT_COMMAND_DEBOUNCE_MS. See loop().
+    uint32_t last_bus_write_ms_{0};
+    bool has_sent_once_{false};
+    PendingBusWrite pending_write_;
+    void schedule_or_send_(const PendingBusWrite &pw);
+    void send_to_bus_(const PendingBusWrite &pw);
 };
 
 }  // namespace dali
