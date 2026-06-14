@@ -31,6 +31,8 @@ SOURCES := test_main.cpp \
            test_availability.cpp \
            test_bus_health.cpp \
            test_inventory.cpp \
+           test_names.cpp \
+           test_event_log.cpp \
            $(DALI_DIR)/dali_bus_manager.cpp
 
 BIN := dali_tests
