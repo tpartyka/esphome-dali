@@ -80,6 +80,21 @@ def test_dashboard_lamps_endpoint(dashboard_url):
         assert addr in addrs
 
 
+def test_dashboard_color_temp_range(dashboard_url):
+    body = httpx.get(f"{dashboard_url}/api/lamps", timeout=5).json()
+
+    ct_lamps = [l for l in body["lamps"] if l["color_temp_mireds"] is not None]
+    ct_groups = [g for g in body["groups"] if g["color_temp_mireds"] is not None]
+    if not ct_lamps and not ct_groups:
+        pytest.skip("no CT-capable lamps or groups on this bus")
+
+    for entry in ct_lamps + ct_groups:
+        lo = entry["color_temp_min_mireds"]
+        hi = entry["color_temp_max_mireds"]
+        assert lo < hi
+        assert lo <= entry["color_temp_mireds"] <= hi
+
+
 def test_bus_diagnostics_baseline(entities_by_name):
     online = entities_by_name.get("DALI Bus Online")
     disconnected = entities_by_name.get("DALI Bus Disconnected")
@@ -87,3 +102,139 @@ def test_bus_diagnostics_baseline(entities_by_name):
     assert disconnected is not None, "DALI Bus Disconnected sensor not exposed"
     # Presence is verified here; live state values are checked via the
     # subscribe API in test_stability.py where a state stream is already open.
+
+
+def test_lamp_control_endpoint(dashboard_url):
+    addr = config.LAMP_ADDRS[0]
+    resp = httpx.post(
+        f"{dashboard_url}/api/lamp",
+        params={"target": f"lamp:{addr}", "on": 1, "brightness_pct": 50},
+        timeout=5,
+    )
+    assert resp.status_code == 200
+    assert resp.text == "queued"
+    time.sleep(SETTLE_S)
+
+    body = httpx.get(f"{dashboard_url}/api/lamps", timeout=5).json()
+    lamp = next(l for l in body["lamps"] if l["addr"] == addr)
+    assert lamp["on"] is True
+    assert abs(lamp["brightness_pct"] - 50) <= 5
+
+    resp = httpx.post(f"{dashboard_url}/api/lamp", params={"target": f"lamp:{addr}", "on": 0}, timeout=5)
+    assert resp.status_code == 200
+    time.sleep(SETTLE_S)
+
+
+@pytest.mark.parametrize("group", config.GROUPS)
+def test_group_control_endpoint(dashboard_url, group):
+    resp = httpx.post(
+        f"{dashboard_url}/api/lamp",
+        params={"target": f"group:{group}", "on": 1, "brightness_pct": 40},
+        timeout=5,
+    )
+    assert resp.status_code == 200
+    assert resp.text == "queued"
+    time.sleep(SETTLE_S)
+
+    body = httpx.get(f"{dashboard_url}/api/lamps", timeout=5).json()
+    groups = {g["group"]: g for g in body["groups"]}
+    assert group in groups
+    assert groups[group]["on"] is True
+
+    resp = httpx.post(f"{dashboard_url}/api/lamp", params={"target": f"group:{group}", "on": 0}, timeout=5)
+    assert resp.status_code == 200
+    time.sleep(SETTLE_S)
+
+
+def test_lamp_control_validation(dashboard_url):
+    # Missing target -> 409.
+    resp = httpx.post(f"{dashboard_url}/api/lamp", params={"on": 1}, timeout=5)
+    assert resp.status_code == 409
+
+    # No control fields -> 409.
+    addr = config.LAMP_ADDRS[0]
+    resp = httpx.post(f"{dashboard_url}/api/lamp", params={"target": f"lamp:{addr}"}, timeout=5)
+    assert resp.status_code == 409
+
+    # Out-of-range brightness -> 409.
+    resp = httpx.post(
+        f"{dashboard_url}/api/lamp",
+        params={"target": f"lamp:{addr}", "brightness_pct": 150},
+        timeout=5,
+    )
+    assert resp.status_code == 409
+
+    # Unknown target -> 409.
+    resp = httpx.post(f"{dashboard_url}/api/lamp", params={"target": "all", "on": 1}, timeout=5)
+    assert resp.status_code == 409
+
+
+def test_names_roundtrip(dashboard_url):
+    addr = config.LAMP_ADDRS[0]
+    group = config.GROUPS[0]
+    scene = config.SCENES[0]
+
+    cases = [
+        ("lamp", addr, "Kitchen Test"),
+        ("group", group, "Group Test"),
+        ("scene", scene, "Scene Test"),
+    ]
+    try:
+        for kind, index, name in cases:
+            resp = httpx.post(
+                f"{dashboard_url}/api/names",
+                params={"kind": kind, "index": index, "name": name},
+                timeout=5,
+            )
+            assert resp.status_code == 200
+            assert resp.text == "queued"
+        time.sleep(SETTLE_S)
+
+        body = httpx.get(f"{dashboard_url}/api/names", timeout=5).json()
+        for kind, index, name in cases:
+            assert body[f"{kind}s"][str(index)] == name
+    finally:
+        # Clear the names again so this test doesn't leave dashboard state behind.
+        for kind, index, _ in cases:
+            httpx.post(f"{dashboard_url}/api/names", params={"kind": kind, "index": index, "name": ""}, timeout=5)
+        time.sleep(SETTLE_S)
+
+
+def test_names_validation(dashboard_url):
+    resp = httpx.post(f"{dashboard_url}/api/names", params={"kind": "bogus", "index": 0, "name": "x"}, timeout=5)
+    assert resp.status_code == 409
+
+    resp = httpx.post(f"{dashboard_url}/api/names", params={"kind": "lamp", "index": 99, "name": "x"}, timeout=5)
+    assert resp.status_code == 409
+
+
+def test_log_endpoint(dashboard_url):
+    resp = httpx.get(f"{dashboard_url}/api/log", timeout=5)
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert "now_ms" in body
+    counters = body["counters"]
+    for key in ("errors", "bus_down", "collisions", "disconnected", "online"):
+        assert key in counters
+
+    assert isinstance(body["events"], list)
+    for event in body["events"]:
+        assert "ts" in event
+        assert "type" in event
+        assert "addr" in event
+        assert "value" in event
+
+
+def test_discovery_scan(dashboard_url):
+    resp = httpx.post(f"{dashboard_url}/api/discovery", params={"mode": "discover"}, timeout=5)
+    assert resp.status_code == 200
+    assert resp.text == "queued"
+
+    # mode=all is destructive (reassigns every short address) and is
+    # intentionally not exercised here -- see device_tests/README.md.
+    resp = httpx.post(f"{dashboard_url}/api/discovery", params={"mode": "all"}, timeout=5)
+    assert resp.status_code == 409
+
+    resp = httpx.post(f"{dashboard_url}/api/discovery", params={"mode": "bogus"}, timeout=5)
+    assert resp.status_code == 409

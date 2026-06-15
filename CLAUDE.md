@@ -98,19 +98,56 @@ capped.
 
 `esphome_dali_web.h/.cpp` implements `DaliWebDashboard`, a small
 `AsyncWebHandler` (via `web_server_base`) serving a single embedded HTML/JS
-page plus `/api/lamps`, `/api/group`, `/api/scene`, `/api/identify` endpoints.
-GET handlers read cached state only. POST handlers (group changes, scene
-actions, identify) enqueue a pending action that is drained on the next
+"cockpit" page plus a REST API. GET handlers read cached state only. POST
+handlers enqueue a `DaliPendingAction` that is drained on the next
 `DaliBusComponent::loop()` iteration, because the bit-banged DALI bus is not
-thread-safe and must only be touched from the main loop.
+thread-safe and must only be touched from the main loop. POST responses are
+`200 "queued"` or `409 "<reason>"` (only these two status codes map correctly
+through web_server_idf).
+
+Endpoints:
+- `GET /api/lamps` — per-lamp status/control state (`addr`, `name`, `online`,
+  `problem`, `on`, `brightness_pct`, `color_temp_mireds`, `groups`), plus a
+  top-level `groups` array (one entry per group with an active "DALI Group N"
+  light: `group`, `name`, `on`, `brightness_pct`, `color_temp_mireds`). For
+  lamps/groups that support color temperature, `color_temp_min_mireds` and
+  `color_temp_max_mireds` give that light's configured CT range (from
+  `cold_white_temperature`/`warm_white_temperature`), used by the dashboard to
+  size the CT slider per device instead of a fixed range.
+- `POST /api/group` — add/remove a lamp's group membership (unchanged).
+- `POST /api/scene` — recall/store/remove a scene for a target
+  (`all`/`group:N`/`lamp:N`, unchanged).
+- `POST /api/identify` — blink a lamp to identify it (unchanged).
+- `POST /api/lamp?target=lamp:N|group:N&on=0|1&brightness_pct=0-100&color_temp_mireds=N` —
+  direct control of any lamp or group light. At least one of
+  `on`/`brightness_pct`/`color_temp_mireds` is required. Goes through
+  `DaliLight::perform_call()` -> `light::LightState::make_call()`, so the
+  normal debounce/coalescing and HA sync apply.
+- `GET /api/names` / `POST /api/names?kind=lamp|group|scene&index=N&name=...` —
+  dashboard-only display names (independent of HA entity names), persisted to
+  flash via `m_names_pref_` (key `0xDA111102u`, distinct from the inventory
+  key `0xDA111101u`). An empty `name` clears the entry. `GET` returns a sparse
+  `{"lamps": {"N": "..."}, "groups": {...}, "scenes": {...}}` object, omitting
+  unset entries.
+- `POST /api/discovery?mode=discover|unassigned|all[&confirm=yes]` — runs
+  `run_discovery()` with `DaliInitMode::{DiscoverOnly,InitializeUnassigned,InitializeAll}`.
+  `mode=all` re-initializes every short address and requires `&confirm=yes` as
+  a server-side safety net (the dashboard UI also shows a confirm dialog).
+- `GET /api/log` — `{"now_ms", "counters": {"errors","bus_down","collisions","disconnected","online"}, "events": [...]}`.
+  `events` is the in-RAM bus event log (`m_event_log_`, a 32-entry ring
+  buffer, `dali_event_log::RingBuffer`), oldest-first, lost on reboot like the
+  diagnostic counters. Each event has `ts` (ms since boot), `type` (e.g.
+  `"bus_down"`, `"lamp_unavailable"`), `addr` (`null` if not lamp-specific),
+  and `value`.
 
 ### Extracting pure logic for host testing
 
 ESPHome-side decision logic that doesn't need ESPHome types is pulled out into
 small `dali_*.h` headers under `components/dali/` (e.g. `dali_debounce.h`,
-`dali_availability.h`, `dali_bus_health.h`, `dali_inventory.h`), each in its
-own namespace (`dali_debounce`, `dali_availability`, etc. — never a top-level
-`dali` namespace, which collides with `esphome::dali`). The ESPHome `.cpp`
+`dali_availability.h`, `dali_bus_health.h`, `dali_inventory.h`,
+`dali_names.h`, `dali_event_log.h`), each in its own namespace
+(`dali_debounce`, `dali_availability`, etc. — never a top-level `dali`
+namespace, which collides with `esphome::dali`). The ESPHome `.cpp`
 calls into these helpers and keeps only the ESPHome-specific glue (state
 members, logging, sensor publishing); each header has a matching
 `tests/test_*.cpp` with table-driven cases against `framework.h`, registered

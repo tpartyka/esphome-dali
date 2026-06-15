@@ -44,7 +44,10 @@ def event_loop():
 def api_client(event_loop):
     async def _connect():
         client = APIClient(config.HOST, config.API_PORT, config.API_PASSWORD)
-        await client.connect(login=True)
+        # ESPHome removed the ConnectRequest/ConnectResponse login handshake in
+        # 2026.1.0 (password auth no longer exists); login=True makes aioesphomeapi
+        # wait forever for a ConnectResponse the firmware never sends.
+        await client.connect(login=False)
         return client
 
     client = event_loop.run_until_complete(_connect())

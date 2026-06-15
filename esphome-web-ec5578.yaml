@@ -8,6 +8,12 @@ esp32:
   variant: esp32s3
   framework:
     type: esp-idf
+    sdkconfig_options:
+      # Default of 10 is exhausted by mDNS + the API server + the cockpit
+      # dashboard's AsyncWebServer (max_open_sockets=7 with LRU purging),
+      # causing httpd_accept_conn to fail with ENFILE (errno 23) and reset
+      # new dashboard connections whenever a native API client is connected.
+      CONFIG_LWIP_MAX_SOCKETS: "16"
 
 # Enable logging
 logger:

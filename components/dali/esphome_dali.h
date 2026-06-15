@@ -11,6 +11,8 @@
 #include <esphome.h>
 #include <vector>
 #include "dali.h"
+#include "dali_event_log.h"
+#include "dali_names.h"
 #include "esphome_dali_input.h"
 #include "esphome_dali_web.h"
 
@@ -194,10 +196,54 @@ public:
         uint8_t brightness_pct;     // 0-100
         bool has_color_temp;
         uint16_t color_temp_mireds; // valid only if has_color_temp
+        uint16_t color_temp_min_mireds; // valid only if has_color_temp
+        uint16_t color_temp_max_mireds; // valid only if has_color_temp
         uint16_t groups;            // bit N set => member of group N (0-15)
     };
     size_t lamp_count() const { return m_pollable_lights.size(); }
     LampInfo lamp_info(size_t index) const;
+
+    /// @brief Find the DaliLight* addressable as `addr`: for a short address
+    /// (0..ADDR_SHORT_MAX), looks up m_pollable_lights by address(); for a
+    /// group address (ADDR_GROUP | group), returns m_group_lights_[group].
+    /// Returns nullptr if not found / the group light hasn't been created yet.
+    DaliLight* find_light_for_address(uint8_t addr) const;
+
+    /// @brief The "DALI Group N" light (0..15), or nullptr if that group has
+    /// no active members / hasn't been created yet.
+    DaliLight* group_light(uint8_t group) const { return group < 16 ? m_group_lights_[group] : nullptr; }
+
+    /// @brief Dashboard-only display names (independent of HA entity names),
+    /// persisted to flash. Empty string if no custom name has been set.
+    enum class NameKind : uint8_t { Lamp, Group, Scene };
+    const char* lamp_name(uint8_t addr) const;
+    const char* group_name(uint8_t group) const;
+    const char* scene_name(uint8_t scene) const;
+
+    /// @brief Set (or clear, with an empty `name`) a dashboard-only display
+    /// name and persist it to flash. `idx` is a short address (0..63) for
+    /// NameKind::Lamp, or 0..15 for Group/Scene. Returns false if `idx` is out
+    /// of range.
+    bool set_name(NameKind kind, uint8_t idx, const std::string& name);
+
+    /// @brief Capacity of the in-RAM bus event log (see m_event_log_ below).
+    static constexpr size_t DALI_EVENT_LOG_SIZE = 32;
+
+    /// @brief Snapshot of the in-RAM bus event log for the web dashboard.
+    /// RAM-only, cleared on reboot (matches the diagnostic counters' lifecycle).
+    const dali_event_log::RingBuffer<DALI_EVENT_LOG_SIZE>& event_log() const { return m_event_log_; }
+
+    /// @brief Append an event to the in-RAM event log. Public so DaliLight can
+    /// log per-lamp availability/problem transitions via its `bus` pointer.
+    void log_event_(dali_event_log::EventType type, uint8_t addr = dali_event_log::NO_ADDR, uint16_t value = 0);
+
+    /// @brief Lifetime software-diagnostic counters/flags for the web dashboard's
+    /// /api/log endpoint (same values as the "DALI Bus *" diagnostic sensors).
+    uint32_t error_count() const { return m_error_count_; }
+    uint32_t bus_down_count() const { return m_bus_down_count_; }
+    uint32_t collision_count() const { return m_collision_count_; }
+    bool is_disconnected() const { return m_disconnected_; }
+    bool is_bus_online() const { return m_bus_online_; }
 
     /// @brief Whether the web dashboard is enabled, and which TCP port it listens on.
     void set_dashboard_enabled(bool v) { m_dashboard_enabled = v; }
@@ -383,6 +429,17 @@ private:
     // populated during create_group_lights_() and kept up to date by
     // add_to_group()/remove_from_group(). Read by the web dashboard.
     uint16_t m_group_membership_[ADDR_SHORT_MAX+1] = {0};
+
+    // Dashboard-only custom names (lamps/groups/scenes), persisted to flash
+    // independently of the inventory mask. See dali_names.h.
+    dali_names::DaliNamesBlob m_names_{};
+    ESPPreferenceObject m_names_pref_;
+    void restore_names_();
+    void save_names_();
+
+    // In-RAM bus event log for the dashboard (see dali_event_log.h). Lost on
+    // reboot, same lifecycle as the diagnostic counters below.
+    dali_event_log::RingBuffer<DALI_EVENT_LOG_SIZE> m_event_log_;
 
     // Non-blocking blink sequence for identify_lamp(), advanced from loop().
     struct IdentifyState {

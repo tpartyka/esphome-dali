@@ -287,6 +287,10 @@ void DaliBusComponent::setup() {
 
     DALI_LOGI("DALI bus ready");
 
+    // Dashboard-only custom names (lamps/groups/scenes) are independent of
+    // discovery/inventory and the underlying HA entities, so always restore them.
+    restore_names_();
+
     // Always expose the "Run DALI Discovery" and "Reboot" buttons (no YAML required).
     // They must be registered here in setup(), before the API client connects,
     // otherwise Home Assistant won't list them.
@@ -606,6 +610,66 @@ void DaliBusComponent::save_inventory_(uint64_t present_mask) {
         DALI_LOGD("Saved DALI inventory mask 0x%08x%08x",
                   (unsigned) (present_mask >> 32), (unsigned) (present_mask & 0xFFFFFFFF));
     }
+}
+
+void DaliBusComponent::restore_names_() {
+    m_names_pref_ = global_preferences->make_preference<dali_names::DaliNamesBlob>(0xDA111102u);
+    dali_names::DaliNamesBlob loaded{};
+    if (!m_names_pref_.load(&loaded)) {
+        DALI_LOGD("No saved DALI custom names to restore");
+        return;
+    }
+    dali_names::sanitize_blob(loaded);
+    m_names_ = loaded;
+    DALI_LOGI("Restored DALI custom names from flash");
+}
+
+void DaliBusComponent::save_names_() {
+    if (m_names_pref_.save(&m_names_)) {
+        DALI_LOGD("Saved DALI custom names");
+    }
+}
+
+const char* DaliBusComponent::lamp_name(uint8_t addr) const {
+    if (addr >= dali_names::LAMP_COUNT) return "";
+    return m_names_.lamp_names[addr];
+}
+
+const char* DaliBusComponent::group_name(uint8_t group) const {
+    if (group >= dali_names::GROUP_COUNT) return "";
+    return m_names_.group_names[group];
+}
+
+const char* DaliBusComponent::scene_name(uint8_t scene) const {
+    if (scene >= dali_names::SCENE_COUNT) return "";
+    return m_names_.scene_names[scene];
+}
+
+bool DaliBusComponent::set_name(NameKind kind, uint8_t idx, const std::string& name) {
+    char* dst;
+    switch (kind) {
+        case NameKind::Lamp:
+            if (idx >= dali_names::LAMP_COUNT) return false;
+            dst = m_names_.lamp_names[idx];
+            break;
+        case NameKind::Group:
+            if (idx >= dali_names::GROUP_COUNT) return false;
+            dst = m_names_.group_names[idx];
+            break;
+        case NameKind::Scene:
+            if (idx >= dali_names::SCENE_COUNT) return false;
+            dst = m_names_.scene_names[idx];
+            break;
+        default:
+            return false;
+    }
+    dali_names::copy_name(dst, name);
+    save_names_();
+    return true;
+}
+
+void DaliBusComponent::log_event_(dali_event_log::EventType type, uint8_t addr, uint16_t value) {
+    m_event_log_.push({millis(), type, addr, value});
 }
 
 void DaliBusComponent::create_light_component(short_addr_t short_addr, uint32_t long_addr) {
@@ -997,9 +1061,24 @@ DaliBusComponent::LampInfo DaliBusComponent::lamp_info(size_t index) const {
     info.on = rv.is_on();
     info.brightness_pct = (uint8_t) lroundf(rv.get_brightness() * 100.0f);
     info.has_color_temp = light->supports_color_temp();
-    info.color_temp_mireds = info.has_color_temp ? (uint16_t) lroundf(rv.get_color_temperature()) : 0;
+    info.color_temp_mireds = info.has_color_temp ? light->current_color_temp_mired() : 0;
+    info.color_temp_min_mireds = info.has_color_temp ? light->min_mireds() : 0;
+    info.color_temp_max_mireds = info.has_color_temp ? light->max_mireds() : 0;
     info.groups = (info.addr <= ADDR_SHORT_MAX) ? m_group_membership_[info.addr] : 0;
     return info;
+}
+
+DaliLight* DaliBusComponent::find_light_for_address(uint8_t addr) const {
+    if (addr <= ADDR_SHORT_MAX) {
+        for (DaliLight* light : m_pollable_lights) {
+            if (light->address() == addr) return light;
+        }
+        return nullptr;
+    }
+    if ((addr & ADDR_GROUP_MASK) != 0) {
+        return group_light(addr & 0x0F);
+    }
+    return nullptr;
 }
 
 binary_sensor::BinarySensor* DaliBusComponent::create_status_sensor(short_addr_t short_addr) {
@@ -1097,6 +1176,7 @@ void DaliBusComponent::note_disconnected_(bool disconnected) {
 #ifdef USE_BINARY_SENSOR
     if (m_disconnected_sensor_ != nullptr) m_disconnected_sensor_->publish_state(disconnected);
 #endif
+    log_event_(disconnected ? dali_event_log::EventType::Disconnected : dali_event_log::EventType::Reconnected);
 }
 
 void DaliBusComponent::note_collision_() {
@@ -1104,6 +1184,7 @@ void DaliBusComponent::note_collision_() {
 #ifdef USE_SENSOR
     if (m_collision_sensor_ != nullptr) m_collision_sensor_->publish_state(m_collision_count_);
 #endif
+    log_event_(dali_event_log::EventType::Collision);
 }
 
 void DaliBusComponent::update_bus_health_(bool any_response) {
@@ -1113,10 +1194,12 @@ void DaliBusComponent::update_bus_health_(bool any_response) {
     if (m_bus_online_) {
         if (m_bus_sensor_ != nullptr) m_bus_sensor_->publish_state(true);
         DALI_LOGI("DALI bus recovered");
+        log_event_(dali_event_log::EventType::BusUp);
         on_bus_recovered_();
     } else {
         if (m_bus_sensor_ != nullptr) m_bus_sensor_->publish_state(false);
         note_bus_down_();
+        log_event_(dali_event_log::EventType::BusDown);
         DALI_LOGW("DALI bus down: no control gear answered for %u poll rounds", m_bus_down_rounds_);
     }
 }
