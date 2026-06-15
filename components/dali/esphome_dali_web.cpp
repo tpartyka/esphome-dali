@@ -167,8 +167,6 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-function ctRange() { return { min: 100, max: 400 }; }
-
 // --- names -----------------------------------------------------------
 
 async function loadNames() {
@@ -275,10 +273,9 @@ function controlCard(opts) {
     const ctLabel = document.createElement('label');
     ctLabel.textContent = 'CT';
     ctRow.appendChild(ctLabel);
-    const range = ctRange();
     const ctInput = document.createElement('input');
     ctInput.type = 'range';
-    ctInput.min = range.min; ctInput.max = range.max;
+    ctInput.min = opts.color_temp_min_mireds; ctInput.max = opts.color_temp_max_mireds;
     ctInput.value = opts.color_temp_mireds;
     const ctVal = document.createElement('span');
     ctVal.className = 'val';
@@ -347,7 +344,9 @@ function renderLamps(lamps) {
       nameKind: 'lamp', nameIndex: l.addr, currentName: l.name, placeholder: 'Lamp ' + l.addr,
       addrLabel: '#' + l.addr, dotClass, statusText,
       target: 'lamp:' + l.addr, on: l.on, brightness_pct: l.brightness_pct,
-      color_temp_mireds: l.color_temp_mireds, extra,
+      color_temp_mireds: l.color_temp_mireds,
+      color_temp_min_mireds: l.color_temp_min_mireds, color_temp_max_mireds: l.color_temp_max_mireds,
+      extra,
     });
     lampsGrid.appendChild(card);
   }
@@ -373,7 +372,9 @@ function renderGroups(groups, lamps) {
       addrLabel: 'Grp ' + g.group, dotClass: g.on ? 'online' : 'offline',
       statusText: g.on ? 'On' : 'Off',
       target: 'group:' + g.group, on: g.on, brightness_pct: g.brightness_pct,
-      color_temp_mireds: g.color_temp_mireds, extra: membersDiv,
+      color_temp_mireds: g.color_temp_mireds,
+      color_temp_min_mireds: g.color_temp_min_mireds, color_temp_max_mireds: g.color_temp_max_mireds,
+      extra: membersDiv,
     });
     groupsGrid.appendChild(card);
   }
@@ -611,6 +612,8 @@ void DaliWebDashboard::handle_lamps_(AsyncWebServerRequest* request) {
             lamp["brightness_pct"] = info.brightness_pct;
             if (info.has_color_temp) {
                 lamp["color_temp_mireds"] = info.color_temp_mireds;
+                lamp["color_temp_min_mireds"] = info.color_temp_min_mireds;
+                lamp["color_temp_max_mireds"] = info.color_temp_max_mireds;
             } else {
                 lamp["color_temp_mireds"] = nullptr;
             }
@@ -632,6 +635,8 @@ void DaliWebDashboard::handle_lamps_(AsyncWebServerRequest* request) {
             jg["brightness_pct"] = (uint8_t) lroundf(rv.get_brightness() * 100.0f);
             if (gl->supports_color_temp()) {
                 jg["color_temp_mireds"] = gl->current_color_temp_mired();
+                jg["color_temp_min_mireds"] = gl->min_mireds();
+                jg["color_temp_max_mireds"] = gl->max_mireds();
             } else {
                 jg["color_temp_mireds"] = nullptr;
             }
@@ -807,20 +812,30 @@ void DaliWebDashboard::handle_lamp_control_(AsyncWebServerRequest* request) {
 
 void DaliWebDashboard::handle_names_get_(AsyncWebServerRequest* request) {
     std::string body = json::build_json([this](JsonObject root) {
+        char key[4];
         JsonObject lamps = root["lamps"].to<JsonObject>();
         for (uint8_t a = 0; a <= ADDR_SHORT_MAX; a++) {
             const char* name = bus_->lamp_name(a);
-            if (dali_names::has_name(name)) lamps[std::to_string(a)] = name;
+            if (dali_names::has_name(name)) {
+                snprintf(key, sizeof(key), "%u", a);
+                lamps[key] = name;
+            }
         }
         JsonObject groups = root["groups"].to<JsonObject>();
         for (uint8_t g = 0; g < 16; g++) {
             const char* name = bus_->group_name(g);
-            if (dali_names::has_name(name)) groups[std::to_string(g)] = name;
+            if (dali_names::has_name(name)) {
+                snprintf(key, sizeof(key), "%u", g);
+                groups[key] = name;
+            }
         }
         JsonObject scenes = root["scenes"].to<JsonObject>();
         for (uint8_t s = 0; s < 16; s++) {
             const char* name = bus_->scene_name(s);
-            if (dali_names::has_name(name)) scenes[std::to_string(s)] = name;
+            if (dali_names::has_name(name)) {
+                snprintf(key, sizeof(key), "%u", s);
+                scenes[key] = name;
+            }
         }
     });
     request->send(200, "application/json", body.c_str());

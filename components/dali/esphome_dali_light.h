@@ -116,6 +116,15 @@ class DaliLight : public light::LightOutput, public Component {
     bool supports_color_temp() const { return tc_supported_; }
     const light::LightColorValues& remote_values() const { return state_->remote_values; }
 
+    /// @brief This light's color temperature range in the same units as
+    /// current_color_temp_mired() / perform_call()'s color_temp_mireds (valid
+    /// only if supports_color_temp() is true): the DALI-reported Tc
+    /// coolest/warmest range (dali_tc_coolest_/dali_tc_warmest_), not the
+    /// HA-facing cold_white_temperature_/warm_white_temperature_ trait range,
+    /// which is a separate scale.
+    uint16_t min_mireds() const { return (uint16_t) lroundf(dali_tc_coolest_); }
+    uint16_t max_mireds() const { return (uint16_t) lroundf(dali_tc_warmest_); }
+
     void set_address(uint8_t address) { 
         address_ = address; 
 

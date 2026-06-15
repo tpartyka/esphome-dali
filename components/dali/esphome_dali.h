@@ -196,6 +196,8 @@ public:
         uint8_t brightness_pct;     // 0-100
         bool has_color_temp;
         uint16_t color_temp_mireds; // valid only if has_color_temp
+        uint16_t color_temp_min_mireds; // valid only if has_color_temp
+        uint16_t color_temp_max_mireds; // valid only if has_color_temp
         uint16_t groups;            // bit N set => member of group N (0-15)
     };
     size_t lamp_count() const { return m_pollable_lights.size(); }

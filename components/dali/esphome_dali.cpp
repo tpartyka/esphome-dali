@@ -1061,7 +1061,9 @@ DaliBusComponent::LampInfo DaliBusComponent::lamp_info(size_t index) const {
     info.on = rv.is_on();
     info.brightness_pct = (uint8_t) lroundf(rv.get_brightness() * 100.0f);
     info.has_color_temp = light->supports_color_temp();
-    info.color_temp_mireds = info.has_color_temp ? (uint16_t) lroundf(rv.get_color_temperature()) : 0;
+    info.color_temp_mireds = info.has_color_temp ? light->current_color_temp_mired() : 0;
+    info.color_temp_min_mireds = info.has_color_temp ? light->min_mireds() : 0;
+    info.color_temp_max_mireds = info.has_color_temp ? light->max_mireds() : 0;
     info.groups = (info.addr <= ADDR_SHORT_MAX) ? m_group_membership_[info.addr] : 0;
     return info;
 }

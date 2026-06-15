@@ -109,7 +109,11 @@ Endpoints:
 - `GET /api/lamps` — per-lamp status/control state (`addr`, `name`, `online`,
   `problem`, `on`, `brightness_pct`, `color_temp_mireds`, `groups`), plus a
   top-level `groups` array (one entry per group with an active "DALI Group N"
-  light: `group`, `name`, `on`, `brightness_pct`, `color_temp_mireds`).
+  light: `group`, `name`, `on`, `brightness_pct`, `color_temp_mireds`). For
+  lamps/groups that support color temperature, `color_temp_min_mireds` and
+  `color_temp_max_mireds` give that light's configured CT range (from
+  `cold_white_temperature`/`warm_white_temperature`), used by the dashboard to
+  size the CT slider per device instead of a fixed range.
 - `POST /api/group` — add/remove a lamp's group membership (unchanged).
 - `POST /api/scene` — recall/store/remove a scene for a target
   (`all`/`group:N`/`lamp:N`, unchanged).

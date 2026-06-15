@@ -80,6 +80,21 @@ def test_dashboard_lamps_endpoint(dashboard_url):
         assert addr in addrs
 
 
+def test_dashboard_color_temp_range(dashboard_url):
+    body = httpx.get(f"{dashboard_url}/api/lamps", timeout=5).json()
+
+    ct_lamps = [l for l in body["lamps"] if l["color_temp_mireds"] is not None]
+    ct_groups = [g for g in body["groups"] if g["color_temp_mireds"] is not None]
+    if not ct_lamps and not ct_groups:
+        pytest.skip("no CT-capable lamps or groups on this bus")
+
+    for entry in ct_lamps + ct_groups:
+        lo = entry["color_temp_min_mireds"]
+        hi = entry["color_temp_max_mireds"]
+        assert lo < hi
+        assert lo <= entry["color_temp_mireds"] <= hi
+
+
 def test_bus_diagnostics_baseline(entities_by_name):
     online = entities_by_name.get("DALI Bus Online")
     disconnected = entities_by_name.get("DALI Bus Disconnected")
