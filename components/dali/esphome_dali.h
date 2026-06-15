@@ -8,9 +8,12 @@
 #include "esphome/core/gpio.h"
 #include "esphome/core/preferences.h"
 #include "esphome/components/light/light_state.h"
+#include "esphome/components/switch/switch.h"
+#include "esphome/components/sun/sun.h"
 #include <esphome.h>
 #include <vector>
 #include "dali.h"
+#include "dali_circadian.h"
 #include "dali_event_log.h"
 #include "dali_names.h"
 #include "esphome_dali_input.h"
@@ -249,6 +252,26 @@ public:
     void set_dashboard_enabled(bool v) { m_dashboard_enabled = v; }
     void set_dashboard_port(uint16_t port) { m_dashboard_port = port; }
 
+    /// @brief Circadian color temperature: elevation thresholds (degrees) for
+    /// the day/night color-temperature interpolation, and the `sun:` component
+    /// used to read current elevation. If `sun` is never set, the feature is
+    /// entirely inert (no circadian_groups can be configured without it -- see
+    /// __init__.py's _validate_circadian).
+    void set_circadian_day_elevation(float v) { m_circadian_day_elevation_ = v; }
+    void set_circadian_night_elevation(float v) { m_circadian_night_elevation_ = v; }
+    void set_sun(sun::Sun* s) { m_sun_ = s; }
+
+    /// @brief Register `group` (0..15) for circadian color-temperature control,
+    /// with the given day/night mireds. Called once per `circadian_groups` YAML
+    /// entry from to_code().
+    void add_circadian_group(uint8_t group, uint16_t day_mireds, uint16_t night_mireds);
+
+    /// @brief Enable/disable circadian color-temperature control for `group`
+    /// (0..15) and persist the change to flash. Called by the "DALI Group N
+    /// Circadian" switch's write_state().
+    void set_circadian_enabled(uint8_t group, bool enabled);
+    bool circadian_enabled(uint8_t group) const;
+
     /// @brief Device-class string-table indices (registered in codegen). 0 = unset.
     /// Passed into configure_entity_() so Home Assistant renders the right
     /// semantics ("Connected"/"Disconnected", "Problem"/"OK").
@@ -338,6 +361,15 @@ private:
     /// @brief Create the group-membership controls: target-address + group-number
     /// selectors, and Add/Remove buttons.
     void create_group_controls();
+    /// @brief Create one "DALI Group N Circadian" switch per configured
+    /// circadian group (see m_circadian_groups_), reflecting the restored
+    /// enabled mask.
+    void create_circadian_switches_();
+    /// @brief Periodic (every DALI_CIRCADIAN_UPDATE_MS) recompute of circadian
+    /// color temperature from current sun elevation, re-applied to each
+    /// enabled, currently-on group light via perform_call(). No-op if no
+    /// `sun:` component was configured.
+    void update_circadian_();
 
     /// @brief Fold one completed poll round's result into bus-health state. Marks the
     /// bus down after DALI_BUS_DOWN_ROUNDS all-NACK rounds; recovers on any response.
@@ -366,6 +398,11 @@ private:
     void restore_inventory_();
     /// @brief Persist the set of short addresses currently present on the bus.
     void save_inventory_(uint64_t present_mask);
+
+    /// @brief Load the persisted circadian-enabled mask (key 0xDA111103).
+    void restore_circadian_();
+    /// @brief Persist the circadian-enabled mask.
+    void save_circadian_();
 
     InternalGPIOPin* m_rxPin;
     GPIOPin* m_txPin;
@@ -410,6 +447,27 @@ private:
     // DaliLight* for each created "DALI Group N" light, used to read/publish a
     // group's own color temperature (scene CT capture/recall). nullptr if not created.
     DaliLight* m_group_lights_[16] = { nullptr };
+
+    // Circadian color temperature: per-group day/night mireds (from
+    // circadian_groups YAML), the sun component used for elevation, global
+    // elevation thresholds, the enabled mask (persisted to flash, key
+    // 0xDA111103), and the last mireds applied per group (reset to "none"
+    // when a group is off, so it's promptly re-applied on the next turn-on).
+    struct CircadianGroupConfig {
+        bool configured = false;
+        uint16_t day_mireds = 0;
+        uint16_t night_mireds = 0;
+    };
+    CircadianGroupConfig m_circadian_groups_[16] = {};
+    sun::Sun* m_sun_ = nullptr;
+    float m_circadian_day_elevation_ = 6.0f;
+    float m_circadian_night_elevation_ = -4.0f;
+    uint32_t m_last_circadian_update_ms_ = 0;
+    static constexpr uint32_t DALI_CIRCADIAN_UPDATE_MS = 60000;
+    uint16_t m_circadian_enabled_mask_ = 0;
+    ESPPreferenceObject m_circadian_pref_;
+    optional<uint16_t> m_circadian_last_applied_mireds_[16] = {};
+    switch_::Switch* m_circadian_switches_[16] = { nullptr };
 
     // Scene controls.
     bool m_expose_scenes = true;

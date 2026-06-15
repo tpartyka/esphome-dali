@@ -1,13 +1,14 @@
 from typing import OrderedDict
 from esphome import automation, pins
-from esphome.const import CONF_ID, CONF_RX_PIN, CONF_TX_PIN, CONF_DISCOVERY, CONF_TRIGGER_ID
+from esphome.components import sun
+from esphome.const import CONF_ID, CONF_RX_PIN, CONF_TX_PIN, CONF_DISCOVERY, CONF_TRIGGER_ID, CONF_GROUP
 from esphome.core import CORE
 from esphome.core.entity_helpers import register_device_class
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
 
-AUTO_LOAD = ["light", "output", "button", "number", "binary_sensor", "sensor", "web_server_base", "json"]
+AUTO_LOAD = ["light", "output", "button", "number", "binary_sensor", "sensor", "switch", "web_server_base", "json"]
 
 CONF_DALI_BUS = 'dali_bus'
 CONF_INITIALIZE_ADDRESSES = 'initialize_addresses'
@@ -28,6 +29,12 @@ CONF_MAX_GROUPS = 'max_groups'
 CONF_EXPOSE_SCENES = 'expose_scenes'
 CONF_EXPOSE_DASHBOARD = 'expose_dashboard'
 CONF_DASHBOARD_PORT = 'dashboard_port'
+CONF_SUN_ID = 'sun_id'
+CONF_CIRCADIAN_DAY_ELEVATION = 'day_elevation'
+CONF_CIRCADIAN_NIGHT_ELEVATION = 'night_elevation'
+CONF_CIRCADIAN_GROUPS = 'circadian_groups'
+CONF_DAY_COLOR_TEMPERATURE = 'day_color_temperature'
+CONF_NIGHT_COLOR_TEMPERATURE = 'night_color_temperature'
 
 
 def _validate_dali_level(value):
@@ -80,6 +87,18 @@ def _validate_init_mode(value):
     if isinstance(value, bool):
         return 'unassigned' if value else 'none'
     return cv.one_of(*INIT_MODES, lower=True)(value)
+
+def _validate_circadian(config):
+    groups = config[CONF_CIRCADIAN_GROUPS]
+    if groups and CONF_SUN_ID not in config:
+        raise cv.Invalid(f"'{CONF_CIRCADIAN_GROUPS}' requires '{CONF_SUN_ID}' to be set")
+    seen = set()
+    for entry in groups:
+        g = entry[CONF_GROUP]
+        if g in seen:
+            raise cv.Invalid(f"Duplicate {CONF_GROUP} {g} in '{CONF_CIRCADIAN_GROUPS}'")
+        seen.add(g)
+    return config
 
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(DaliBusComponent),
@@ -137,7 +156,21 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_ON_INPUT_FRAME): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DaliInputFrameTrigger),
     }),
-}).extend(cv.COMPONENT_SCHEMA)
+    # Circadian color temperature: requires a `sun:` component (astronomical
+    # elevation) to determine time of day. If circadian_groups is empty (the
+    # default), the feature is entirely inert.
+    cv.Optional(CONF_SUN_ID): cv.use_id(sun.Sun),
+    # Elevation (degrees) at/above which a circadian group uses its
+    # day_color_temperature, and at/below which it uses its
+    # night_color_temperature, linearly interpolated in between.
+    cv.Optional(CONF_CIRCADIAN_DAY_ELEVATION, default=6.0): cv.float_,
+    cv.Optional(CONF_CIRCADIAN_NIGHT_ELEVATION, default=-4.0): cv.float_,
+    cv.Optional(CONF_CIRCADIAN_GROUPS, default=[]): cv.ensure_list(cv.Schema({
+        cv.Required(CONF_GROUP): cv.int_range(min=0, max=DALI_MAX_GROUPS - 1),
+        cv.Required(CONF_DAY_COLOR_TEMPERATURE): cv.color_temperature,
+        cv.Required(CONF_NIGHT_COLOR_TEMPERATURE): cv.color_temperature,
+    })),
+}).extend(cv.COMPONENT_SCHEMA).add_extra(_validate_circadian)
 
 async def to_code(config: OrderedDict):
     var = cg.new_Pvariable(config[CONF_ID])
@@ -167,6 +200,18 @@ async def to_code(config: OrderedDict):
     cg.add(var.set_expose_scenes(config[CONF_EXPOSE_SCENES]))
     cg.add(var.set_dashboard_enabled(config[CONF_EXPOSE_DASHBOARD]))
     cg.add(var.set_dashboard_port(config[CONF_DASHBOARD_PORT]))
+
+    cg.add(var.set_circadian_day_elevation(config[CONF_CIRCADIAN_DAY_ELEVATION]))
+    cg.add(var.set_circadian_night_elevation(config[CONF_CIRCADIAN_NIGHT_ELEVATION]))
+    if CONF_SUN_ID in config:
+        sun_comp = await cg.get_variable(config[CONF_SUN_ID])
+        cg.add(var.set_sun(sun_comp))
+    for entry in config[CONF_CIRCADIAN_GROUPS]:
+        cg.add(var.add_circadian_group(
+            entry[CONF_GROUP],
+            round(entry[CONF_DAY_COLOR_TEMPERATURE]),
+            round(entry[CONF_NIGHT_COLOR_TEMPERATURE]),
+        ))
 
     # Register the device-class strings our runtime-created diagnostic binary_sensors
     # use, so Home Assistant renders the proper semantics. configure_entity_() only
@@ -233,6 +278,13 @@ async def to_code(config: OrderedDict):
     if config[CONF_EXPOSE_GROUPS]:
         for _ in range(DALI_GROUP_NUMBER_COUNT):
             CORE.register_platform_component("number", var)
+
+    # Circadian color temperature adds one "DALI Group N Circadian" switch per
+    # configured group. Unlike the other _COUNT constants (fixed regardless of
+    # YAML), this count is genuinely variable -- one slot per circadian_groups
+    # entry.
+    for _ in config[CONF_CIRCADIAN_GROUPS]:
+        CORE.register_platform_component("switch", var)
 
     if config.get(CONF_DISCOVERY, False):
         cg.add(var.do_device_discovery())

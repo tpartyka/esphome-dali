@@ -240,6 +240,31 @@ protected:
 };
 #endif  // USE_NUMBER
 
+#ifdef USE_SWITCH
+// Auto-created (no YAML) "DALI Group N Circadian" switch, one per
+// circadian_groups YAML entry, toggling circadian color-temperature control
+// for that group. State is persisted to flash (see restore_circadian_).
+class DaliCircadianSwitch : public esphome::switch_::Switch, public esphome::Component {
+public:
+    DaliCircadianSwitch(DaliBusComponent* parent, uint8_t group) : parent_(parent), group_(group) {}
+
+    void configure_dynamic_entity(const char* name, const char* object_id) {
+        uint32_t entity_fields =
+            (static_cast<uint32_t>(esphome::ENTITY_CATEGORY_CONFIG) << esphome::ENTITY_FIELD_ENTITY_CATEGORY_SHIFT);
+        this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), entity_fields);
+    }
+
+protected:
+    void write_state(bool state) override {
+        this->parent_->set_circadian_enabled(this->group_, state);
+        this->publish_state(state);
+    }
+
+    DaliBusComponent* parent_;
+    uint8_t group_;
+};
+#endif  // USE_SWITCH
+
 #ifdef USE_BINARY_SENSOR
 // Auto-created (no YAML) diagnostic binary_sensor per lamp ("online", "problem").
 // The bus publishes to it from the state poller. The optional device-class index
@@ -301,6 +326,11 @@ void DaliBusComponent::setup() {
     create_group_controls();
     create_bus_sensor();
     create_diag_sensors();
+
+    // Circadian color temperature: restore the per-group enabled mask before
+    // creating the switches, so their initial published state is correct.
+    restore_circadian_();
+    create_circadian_switches_();
 
     // Passive input-device listener (Part 103 push buttons / sensors).
     if (m_input_devices) {
@@ -630,6 +660,24 @@ void DaliBusComponent::save_names_() {
     }
 }
 
+void DaliBusComponent::restore_circadian_() {
+    m_circadian_pref_ = global_preferences->make_preference<dali_circadian::DaliCircadianBlob>(0xDA111103u);
+    dali_circadian::DaliCircadianBlob loaded{};
+    if (!m_circadian_pref_.load(&loaded)) {
+        DALI_LOGD("No saved DALI circadian settings to restore");
+        return;
+    }
+    m_circadian_enabled_mask_ = loaded.enabled_mask;
+    DALI_LOGI("Restored DALI circadian settings from flash");
+}
+
+void DaliBusComponent::save_circadian_() {
+    dali_circadian::DaliCircadianBlob blob{ m_circadian_enabled_mask_ };
+    if (m_circadian_pref_.save(&blob)) {
+        DALI_LOGD("Saved DALI circadian settings");
+    }
+}
+
 const char* DaliBusComponent::lamp_name(uint8_t addr) const {
     if (addr >= dali_names::LAMP_COUNT) return "";
     return m_names_.lamp_names[addr];
@@ -907,6 +955,64 @@ void DaliBusComponent::create_group_controls() {
 #endif
 }
 
+void DaliBusComponent::create_circadian_switches_() {
+#ifdef USE_SWITCH
+    char name[32];
+    char id[32];
+    for (uint8_t g = 0; g < 16; g++) {
+        if (!m_circadian_groups_[g].configured) continue;
+
+        auto* sw = new DaliCircadianSwitch { this, g };
+        snprintf(name, sizeof(name), "DALI Group %u Circadian", (unsigned) g);
+        snprintf(id, sizeof(id), "dali_group_%u_circadian", (unsigned) g);
+        sw->configure_dynamic_entity(name, id);
+        App.register_switch(sw);
+        static_cast<AppRegistrationAccessor&>(App).register_component_(sw);
+        sw->publish_state(circadian_enabled(g));
+        m_circadian_switches_[g] = sw;
+    }
+    DALI_LOGI("Created DALI circadian switches");
+#endif
+}
+
+void DaliBusComponent::update_circadian_() {
+    if (m_sun_ == nullptr) return;
+
+    uint32_t now = millis();
+    if (now - m_last_circadian_update_ms_ < DALI_CIRCADIAN_UPDATE_MS) return;
+    m_last_circadian_update_ms_ = now;
+
+    double elevation = m_sun_->elevation();
+    if (std::isnan(elevation)) return;  // time not synced yet
+
+    for (uint8_t g = 0; g < 16; g++) {
+        if (!m_circadian_groups_[g].configured || !circadian_enabled(g)) continue;
+
+        DaliLight* gl = m_group_lights_[g];
+        if (gl == nullptr || !gl->remote_values().is_on()) {
+            // Reset the sentinel so the next turn-on re-applies promptly.
+            m_circadian_last_applied_mireds_[g].reset();
+            continue;
+        }
+        if (!gl->supports_color_temp()) continue;
+
+        uint16_t mireds = dali_circadian::compute_color_temp_mireds(
+            (float) elevation, m_circadian_day_elevation_, m_circadian_night_elevation_,
+            m_circadian_groups_[g].day_mireds, m_circadian_groups_[g].night_mireds);
+        if (mireds < gl->min_mireds()) mireds = gl->min_mireds();
+        if (mireds > gl->max_mireds()) mireds = gl->max_mireds();
+
+        if (m_circadian_last_applied_mireds_[g].has_value() && m_circadian_last_applied_mireds_[g].value() == mireds)
+            continue;
+
+        ControlRequest req;
+        req.has_color_temp = true;
+        req.color_temp_mireds = mireds;
+        gl->perform_call(req);
+        m_circadian_last_applied_mireds_[g] = mireds;
+    }
+}
+
 void DaliBusComponent::add_to_group(uint8_t addr, uint8_t group) {
     dali.scene.addToGroup(addr, group);
     if (addr <= ADDR_SHORT_MAX) m_group_membership_[addr] |= (uint16_t) (1u << group);
@@ -921,6 +1027,23 @@ void DaliBusComponent::add_to_group(uint8_t addr, uint8_t group) {
 void DaliBusComponent::remove_from_group(uint8_t addr, uint8_t group) {
     dali.scene.removeFromGroup(addr, group);
     if (addr <= ADDR_SHORT_MAX) m_group_membership_[addr] &= (uint16_t) ~(1u << group);
+}
+
+void DaliBusComponent::add_circadian_group(uint8_t group, uint16_t day_mireds, uint16_t night_mireds) {
+    if (group >= 16) return;
+    m_circadian_groups_[group] = { true, day_mireds, night_mireds };
+}
+
+bool DaliBusComponent::circadian_enabled(uint8_t group) const {
+    return dali_circadian::circadian_enabled(m_circadian_enabled_mask_, group);
+}
+
+void DaliBusComponent::set_circadian_enabled(uint8_t group, bool enabled) {
+    if (group >= 16) return;
+    m_circadian_enabled_mask_ = dali_circadian::circadian_set(m_circadian_enabled_mask_, group, enabled);
+    save_circadian_();
+    // Force a prompt re-apply on the next update_circadian_() tick.
+    m_circadian_last_applied_mireds_[group].reset();
 }
 
 void DaliBusComponent::sync_group_member_states(uint8_t group, const GroupStateUpdate& update) {
@@ -1270,6 +1393,8 @@ void DaliBusComponent::loop() {
             m_poll_index++;
         }
     }
+
+    update_circadian_();
 }
 
 void DaliBusComponent::dump_config() {
