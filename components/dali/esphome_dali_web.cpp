@@ -290,6 +290,21 @@ function controlCard(opts) {
     card.appendChild(ctRow);
   }
 
+  // Circadian (read-only: toggled via the "DALI Group N Circadian" HA switch,
+  // or auto-disabled here on a manual CT change above).
+  if (opts.circadian_supported) {
+    const circRow = document.createElement('div');
+    circRow.className = 'ctl-row';
+    const circLabel = document.createElement('label');
+    circLabel.textContent = 'Circadian';
+    circRow.appendChild(circLabel);
+    const circVal = document.createElement('span');
+    circVal.className = 'val';
+    circVal.textContent = opts.circadian_enabled ? 'On' : 'Off';
+    circRow.appendChild(circVal);
+    card.appendChild(circRow);
+  }
+
   if (opts.extra) card.appendChild(opts.extra);
 
   return card;
@@ -374,6 +389,7 @@ function renderGroups(groups, lamps) {
       target: 'group:' + g.group, on: g.on, brightness_pct: g.brightness_pct,
       color_temp_mireds: g.color_temp_mireds,
       color_temp_min_mireds: g.color_temp_min_mireds, color_temp_max_mireds: g.color_temp_max_mireds,
+      circadian_supported: g.circadian_supported, circadian_enabled: g.circadian_enabled,
       extra: membersDiv,
     });
     groupsGrid.appendChild(card);
@@ -640,6 +656,8 @@ void DaliWebDashboard::handle_lamps_(AsyncWebServerRequest* request) {
             } else {
                 jg["color_temp_mireds"] = nullptr;
             }
+            jg["circadian_supported"] = bus_->circadian_configured(g);
+            if (bus_->circadian_configured(g)) jg["circadian_enabled"] = bus_->circadian_enabled(g);
         }
     });
     request->send(200, "application/json", body.c_str());

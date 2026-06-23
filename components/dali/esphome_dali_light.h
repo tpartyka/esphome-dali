@@ -35,6 +35,11 @@ struct ControlRequest {
     float brightness{0.0f};  // 0.0-1.0
     bool has_color_temp{false};
     uint16_t color_temp_mireds{0};
+
+    /// @brief Set by update_circadian_() so perform_call()/write_state() can
+    /// distinguish its own color-temperature updates from a manual change (web
+    /// dashboard or Home Assistant) and skip disabling circadian on itself.
+    bool from_circadian{false};
 };
 
 /// @brief A bus command computed by write_state(), either sent immediately or
@@ -206,6 +211,12 @@ class DaliLight : public light::LightOutput, public Component {
     PendingBusWrite pending_write_;
     void schedule_or_send_(const PendingBusWrite &pw);
     void send_to_bus_(const PendingBusWrite &pw);
+
+    // Set for the duration of perform_call() when called with
+    // ControlRequest::from_circadian, so write_state() (invoked synchronously by
+    // call.perform() below) knows not to treat the resulting color-temperature
+    // change as a manual override. See disable_circadian_for_manual_override().
+    bool circadian_call_in_progress_{false};
 };
 
 }  // namespace dali

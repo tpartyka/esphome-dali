@@ -176,10 +176,13 @@ void dali::DaliLight::setup_state(light::LightState *state) {
         }
     }
     else {
-        // Broadcast/group address: no per-device polling or capability detection.
+        // Broadcast/group address: no per-device polling or capability detection
+        // (no single queryable state). Group lights get color-temperature support
+        // forced on by create_group_light_component()'s set_color_mode() call, since
+        // CT commands to a group are spec-legal no-ops for non-CT members (IEC
+        // 62386-209). No broadcast light entity is created, so this is moot for it.
         this->state_ = state;
         bus->register_command_light(this);
-        // TODO: How do we detect color temperature support for broadcast and group addresses?
     }
 
 
@@ -276,7 +279,12 @@ void dali::DaliLight::perform_call(const ControlRequest& req) {
         if (color_temperature > 1.0f) color_temperature = 1.0f;
         call.set_color_temperature(color_temperature);
     }
+
+    // call.perform() invokes write_state() synchronously; circadian_call_in_progress_
+    // tells it whether this color-temperature change is circadian's own update.
+    this->circadian_call_in_progress_ = req.from_circadian;
     call.perform();
+    this->circadian_call_in_progress_ = false;
 }
 
 void dali::DaliLight::write_state(light::LightState *state) {
@@ -321,6 +329,13 @@ void dali::DaliLight::write_state(light::LightState *state) {
 
         // Only update if temperature has changed, to allow faster brightness changes
         if (dali_color_temperature != last_temperature_) {
+            // A real color-temperature change on a circadian-enabled group that
+            // didn't come from update_circadian_() itself is a manual override
+            // (web dashboard or Home Assistant) -- disable circadian for this
+            // group so the next 60s tick doesn't silently revert it.
+            if (!circadian_call_in_progress_ && (address_ & ADDR_GROUP_MASK) != 0) {
+                bus->disable_circadian_for_manual_override(address_ & 0x0F);
+            }
             last_temperature_ = dali_color_temperature;
             pw.has_color = true;
             pw.color_temp_mired = dali_color_temperature;

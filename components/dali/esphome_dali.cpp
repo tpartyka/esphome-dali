@@ -1008,6 +1008,7 @@ void DaliBusComponent::update_circadian_() {
         ControlRequest req;
         req.has_color_temp = true;
         req.color_temp_mireds = mireds;
+        req.from_circadian = true;
         gl->perform_call(req);
         m_circadian_last_applied_mireds_[g] = mireds;
     }
@@ -1044,6 +1045,15 @@ void DaliBusComponent::set_circadian_enabled(uint8_t group, bool enabled) {
     save_circadian_();
     // Force a prompt re-apply on the next update_circadian_() tick.
     m_circadian_last_applied_mireds_[group].reset();
+}
+
+void DaliBusComponent::disable_circadian_for_manual_override(uint8_t group) {
+    if (group >= 16 || !circadian_enabled(group)) return;
+    set_circadian_enabled(group, false);
+#ifdef USE_SWITCH
+    if (m_circadian_switches_[group] != nullptr) m_circadian_switches_[group]->publish_state(false);
+#endif
+    DALI_LOGI("DALI Group %u circadian disabled (manual color-temp override)", (unsigned) group);
 }
 
 void DaliBusComponent::sync_group_member_states(uint8_t group, const GroupStateUpdate& update) {

@@ -272,6 +272,22 @@ public:
     void set_circadian_enabled(uint8_t group, bool enabled);
     bool circadian_enabled(uint8_t group) const;
 
+    /// @brief Whether `group` (0..15) has a `circadian_groups` YAML entry at
+    /// all, independent of whether it's currently enabled. Used by the web
+    /// dashboard (/api/lamps) to only report circadian state for groups where
+    /// it's actually configured.
+    bool circadian_configured(uint8_t group) const {
+        return group < 16 && m_circadian_groups_[group].configured;
+    }
+
+    /// @brief Called by a "DALI Group N" light when it sends a color-temperature
+    /// command that did NOT originate from update_circadian_() (i.e. a manual
+    /// change via Home Assistant or the web dashboard). If `group` has circadian
+    /// enabled, disables it (persisting + republishing the switch entity) so the
+    /// automatic 60s update doesn't silently revert the user's change. No-op if
+    /// circadian is already disabled for `group`.
+    void disable_circadian_for_manual_override(uint8_t group);
+
     /// @brief Device-class string-table indices (registered in codegen). 0 = unset.
     /// Passed into configure_entity_() so Home Assistant renders the right
     /// semantics ("Connected"/"Disconnected", "Problem"/"OK").
