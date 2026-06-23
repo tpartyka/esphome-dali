@@ -32,11 +32,26 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
+time:
+  - platform: sntp
+
+# Used by dali's circadian_groups below to compute sun elevation.
+sun:
+  id: sun_comp
+  latitude: 50.0614   # Krakow, PL
+  longitude: 19.9366
+
 external_components:
   - source:
       type: local
       path: components
     components: [dali]
+
+# Required by dali's expose_dashboard so Home Assistant's "Visit Device" link
+# opens the cockpit: port must match dali's dashboard_port below. The dali
+# dashboard registers itself on this shared server and shadows the stock UI.
+web_server:
+  port: 8080
 
 # Bit-banged 1200 baud DALI bus (master)
 dali:
@@ -63,3 +78,8 @@ dali:
   expose_dashboard: true           # Serve the built-in web dashboard (ESP32 only). default: false. allowed: true, false
   dashboard_port: 8080             # TCP port for the web dashboard. default: 8080. allowed: any valid port
   input_devices: false             # Enable push-button input listener + collision avoidance/detection. default: false. allowed: true, false
+  sun_id: sun_comp                 # sun: component used to read current elevation for circadian_groups.
+  circadian_groups:                # Per-group circadian color temperature, toggled via "DALI Group N Circadian" switch.
+    - group: 0
+      day_color_temperature: 3400K
+      night_color_temperature: 2800K

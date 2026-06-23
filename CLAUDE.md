@@ -89,6 +89,10 @@ the C++ code might create at runtime, e.g.:
   / `DALI_DIAG_COLLISION_SENSOR_COUNT` (sensor) for `expose_bus_diagnostics`'s
   "DALI Bus Disconnected"/"DALI Bus Errors"/"DALI Bus Down Events"/"DALI
   Collisions" entities
+- one `switch` slot per `circadian_groups` entry, for that group's "DALI Group
+  N Circadian" enable/disable switch — unlike the other entries above, this
+  count is genuinely variable (one per YAML list entry, not a fixed `_COUNT`
+  constant). `switch` was added to `AUTO_LOAD` for this.
 
 If you add a new kind of runtime-created entity, add a matching `_COUNT`
 constant and `register_platform_component` call here, or it will be silently
@@ -104,6 +108,24 @@ handlers enqueue a `DaliPendingAction` that is drained on the next
 thread-safe and must only be touched from the main loop. POST responses are
 `200 "queued"` or `409 "<reason>"` (only these two status codes map correctly
 through web_server_idf).
+
+`expose_dashboard: true` requires an explicit `web_server:` block in the same
+YAML, with its `port` matching `dashboard_port` (`__init__.py`'s
+`_final_validate_dashboard` enforces this at compile time with a clear error
+otherwise). This is because ESPHome's API only reports a `webserver_port` in
+`DeviceInfo` (which Home Assistant uses to point a device's "Visit Device"
+link at it) when the official `web_server` component is compiled in — `dali`
+can't inject that component with a custom port on the user's behalf (AUTO_LOAD
+only auto-creates components with default config). Given that, the dashboard
+registers itself (`DaliWebDashboard::begin()`) onto the *shared*
+`web_server_base` instance instead of opening its own `AsyncWebServer`, at
+`DaliBusComponent`'s `HARDWARE` setup priority — earlier than `web_server`'s
+own (`WIFI - 1`) — so it's first in the handler list and `canHandle()`
+(always `true`) shadows the stock web_server UI entirely at every path; the
+stock UI is compiled in (extra flash) but never actually reachable. Registering
+early is safe because `web_server_base::add_handler()` just queues the handler
+until the underlying socket is actually opened later by `web_server`'s own
+`setup()`, well after the network stack is up.
 
 Endpoints:
 - `GET /api/lamps` — per-lamp status/control state (`addr`, `name`, `online`,
@@ -166,6 +188,35 @@ around a single passive `digital_read()` so the total Manchester bit period is
 unchanged. Detected collisions increment the "DALI Collisions" diagnostic
 sensor (`expose_bus_diagnostics`). These helpers are unit-tested on the host
 in `tests/test_collision.cpp`.
+
+### Circadian color temperature
+
+For groups listed in `circadian_groups`, color temperature is gradually
+shifted between a `day_color_temperature` and `night_color_temperature`
+(Kelvin or mireds, via `cv.color_temperature`) based on the current sun
+elevation, read from an ESPHome `sun:` component referenced by `sun_id`. If
+`sun_id` is not set, `circadian_groups` must be empty and the feature is
+entirely inert.
+
+`dali_circadian.h` contains the pure logic: `compute_color_temp_mireds()`
+linearly interpolates between `night_color_temperature` (at/below
+`night_elevation`, default `-4`) and `day_color_temperature` (at/above
+`day_elevation`, default `6`), clamping at both ends; and
+`circadian_enabled()`/`circadian_set()` manage a `uint16_t` per-group enabled
+bitmask (`DaliCircadianBlob`, persisted to flash at key `0xDA111103`,
+distinct from the inventory `0xDA111101` and dashboard-names `0xDA111102`
+keys).
+
+Each `circadian_groups` entry gets an auto-created "DALI Group N Circadian"
+switch (`ENTITY_CATEGORY_CONFIG`) for runtime enable/disable, restored from
+flash on boot. `update_circadian_()` runs every 60s (`DALI_CIRCADIAN_UPDATE_MS`)
+from `loop()`: for each enabled group whose group light is currently on, it
+recomputes the target mireds from `m_sun_->elevation()` and re-applies via
+`DaliLight::perform_call()` (so normal debounce/coalescing and HA sync apply)
+if it differs from the last-applied value. Whenever a group is off, its
+"last applied" sentinel (`m_circadian_last_applied_mireds_`) is reset to none,
+so the next time it's switched on, the first `update_circadian_()` tick
+re-applies the circadian value promptly rather than waiting for it to drift.
 
 ### Reliability / error recovery
 
