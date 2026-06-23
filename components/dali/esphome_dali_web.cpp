@@ -564,11 +564,9 @@ setInterval(refreshLog, 7000);
 namespace esphome {
 namespace dali {
 
-void DaliWebDashboard::begin(uint16_t port, DaliBusComponent* bus) {
+void DaliWebDashboard::begin(web_server_base::WebServerBase* server_base, DaliBusComponent* bus) {
     bus_ = bus;
-    server_ = new AsyncWebServer(port);
-    server_->addHandler(this);
-    server_->begin();
+    server_base->add_handler(this);
 }
 
 // NOTE: ESPHome's web_server_idf AsyncWebServerRequest::init_response_() only maps

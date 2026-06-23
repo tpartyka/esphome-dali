@@ -2,12 +2,12 @@
 #include <esp_task_wdt.h>
 #include <cmath>
 #include <cstring>
-#ifdef DALI_WEB_DASHBOARD_ENABLED
-#include "esphome/components/network/util.h"
-#endif
 #include "esphome_dali.h"
 #include "esphome_dali_light.h"
 #include "port.h"
+#ifdef DALI_CIRCADIAN_ENABLED
+#include "esphome/components/sun/sun.h"
+#endif
 #ifdef USE_BUTTON
 #include "esphome/components/button/button.h"
 #endif
@@ -356,14 +356,16 @@ void DaliBusComponent::setup() {
         this->enable_loop();
     }
 
-    // Allocate the web dashboard, but defer AsyncWebServer::begin() to loop() --
-    // calling it this early (before the network stack is up) aborts inside
-    // httpd_start(). Force loop() on regardless of the decisions above, so the
-    // dashboard gets started and queued actions get drained even if discovery
-    // found nothing to poll.
+    // Allocate the web dashboard and register it on the shared web_server_base
+    // immediately -- safe even this early, since add_handler() just queues the
+    // handler until web_server:'s own setup() (a later setup_priority) actually
+    // opens the socket. Force loop() on regardless of the decisions above, so
+    // queued dashboard actions get drained even if discovery found nothing to poll.
     if (m_dashboard_enabled) {
 #ifdef DALI_WEB_DASHBOARD_ENABLED
         m_dashboard_ = new DaliWebDashboard {};
+        m_dashboard_->begin(m_web_server_base_, this);
+        DALI_LOGI("DALI web dashboard registered on port %u", (unsigned) m_dashboard_port);
         this->enable_loop();
 #else
         DALI_LOGE("expose_dashboard is set but the web dashboard is only supported on ESP32");
@@ -976,6 +978,7 @@ void DaliBusComponent::create_circadian_switches_() {
 }
 
 void DaliBusComponent::update_circadian_() {
+#ifdef DALI_CIRCADIAN_ENABLED
     if (m_sun_ == nullptr) return;
 
     uint32_t now = millis();
@@ -1012,6 +1015,7 @@ void DaliBusComponent::update_circadian_() {
         gl->perform_call(req);
         m_circadian_last_applied_mireds_[g] = mireds;
     }
+#endif  // DALI_CIRCADIAN_ENABLED
 }
 
 void DaliBusComponent::add_to_group(uint8_t addr, uint8_t group) {
@@ -1348,15 +1352,7 @@ void DaliBusComponent::loop() {
     process_identify_();
 #ifdef DALI_WEB_DASHBOARD_ENABLED
     if (m_dashboard_ != nullptr) {
-        if (!m_dashboard_started_) {
-            if (network::is_connected()) {
-                m_dashboard_->begin(m_dashboard_port, this);
-                m_dashboard_started_ = true;
-                DALI_LOGI("DALI web dashboard listening on port %u", (unsigned) m_dashboard_port);
-            }
-        } else {
-            m_dashboard_->process_pending_actions();
-        }
+        m_dashboard_->process_pending_actions();
     }
 #endif
     if (m_input_devices) {

@@ -1,12 +1,16 @@
 from typing import OrderedDict
 from esphome import automation, pins
-from esphome.components import sun
-from esphome.const import CONF_ID, CONF_RX_PIN, CONF_TX_PIN, CONF_DISCOVERY, CONF_TRIGGER_ID, CONF_GROUP
+from esphome.components import sun, web_server_base
+from esphome.components.web_server_base import CONF_WEB_SERVER_BASE_ID
+from esphome.const import (
+    CONF_ID, CONF_RX_PIN, CONF_TX_PIN, CONF_DISCOVERY, CONF_TRIGGER_ID, CONF_GROUP, CONF_PORT,
+)
 from esphome.core import CORE
 from esphome.core.entity_helpers import register_device_class
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
+import esphome.final_validate as fv
 
 AUTO_LOAD = ["light", "output", "button", "number", "binary_sensor", "sensor", "switch", "web_server_base", "json"]
 
@@ -88,6 +92,34 @@ def _validate_init_mode(value):
         return 'unassigned' if value else 'none'
     return cv.one_of(*INIT_MODES, lower=True)(value)
 
+def _final_validate_dashboard(config):
+    # expose_dashboard's "Visit Device" link in Home Assistant only works if the
+    # device reports a webserver_port over the API, which ESPHome's API only does
+    # when the official `web_server:` component is compiled in (USE_WEBSERVER).
+    # dali can't inject a `web_server:` block with a custom port on the user's
+    # behalf (ESPHome's AUTO_LOAD only auto-creates components with default
+    # config), so require the user to configure it explicitly, sharing dali's
+    # dashboard_port -- the dali dashboard then registers itself onto that same
+    # shared web_server_base instance instead of opening a second server.
+    if not config[CONF_EXPOSE_DASHBOARD] or not CORE.is_esp32:
+        return config
+    web_server_conf = fv.full_config.get().get('web_server')
+    if web_server_conf is None:
+        raise cv.Invalid(
+            f"'{CONF_EXPOSE_DASHBOARD}' requires a 'web_server:' component (with "
+            f"'port: {config[CONF_DASHBOARD_PORT]}') so Home Assistant's 'Visit Device' "
+            f"link can reach the DALI cockpit -- see CLAUDE.md's web dashboard section."
+        )
+    web_server_port = web_server_conf.get(CONF_PORT)
+    if web_server_port != config[CONF_DASHBOARD_PORT]:
+        raise cv.Invalid(
+            f"'web_server:'s port ({web_server_port}) must match '{CONF_DASHBOARD_PORT}' "
+            f"({config[CONF_DASHBOARD_PORT]}) so both serve the DALI cockpit on the same port."
+        )
+    return config
+
+FINAL_VALIDATE_SCHEMA = _final_validate_dashboard
+
 def _validate_circadian(config):
     groups = config[CONF_CIRCADIAN_GROUPS]
     if groups and CONF_SUN_ID not in config:
@@ -149,9 +181,13 @@ CONFIG_SCHEMA = cv.Schema({
     # store/clear buttons (broadcast scene recall/store, scenes 0-15).
     cv.Optional(CONF_EXPOSE_SCENES, default=True): cv.boolean,
     # Serve a small built-in web dashboard (lamp list/status, group assignment,
-    # scene recall/store/remove) on dashboard_port. ESP32 only.
+    # scene recall/store/remove) on dashboard_port. ESP32 only. Registers itself
+    # as a handler on the shared web_server_base instance (taking priority over
+    # the stock web_server UI at '/') instead of opening its own server, so the
+    # device can report a webserver_port over the API -- see _final_validate_dashboard.
     cv.Optional(CONF_EXPOSE_DASHBOARD, default=False): cv.boolean,
     cv.Optional(CONF_DASHBOARD_PORT, default=8080): cv.port,
+    cv.GenerateID(CONF_WEB_SERVER_BASE_ID): cv.use_id(web_server_base.WebServerBase),
     cv.Optional(CONF_INPUT_DEVICES, default=False): cv.boolean,
     cv.Optional(CONF_ON_INPUT_FRAME): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DaliInputFrameTrigger),
@@ -200,10 +236,18 @@ async def to_code(config: OrderedDict):
     cg.add(var.set_expose_scenes(config[CONF_EXPOSE_SCENES]))
     cg.add(var.set_dashboard_enabled(config[CONF_EXPOSE_DASHBOARD]))
     cg.add(var.set_dashboard_port(config[CONF_DASHBOARD_PORT]))
+    if config[CONF_EXPOSE_DASHBOARD] and CORE.is_esp32:
+        web_server_base_var = await cg.get_variable(config[CONF_WEB_SERVER_BASE_ID])
+        cg.add(var.set_web_server_base(web_server_base_var))
 
     cg.add(var.set_circadian_day_elevation(config[CONF_CIRCADIAN_DAY_ELEVATION]))
     cg.add(var.set_circadian_night_elevation(config[CONF_CIRCADIAN_NIGHT_ELEVATION]))
     if CONF_SUN_ID in config:
+        # Gates esphome_dali.{h,cpp}'s sun.h include + update_circadian_() body --
+        # sun: isn't in AUTO_LOAD, so its files aren't in the build tree unless the
+        # user configures it (only possible when sun_id is set), and the dali: side
+        # must not reference the real esphome::sun::Sun type unconditionally.
+        cg.add_define("DALI_CIRCADIAN_ENABLED")
         sun_comp = await cg.get_variable(config[CONF_SUN_ID])
         cg.add(var.set_sun(sun_comp))
     for entry in config[CONF_CIRCADIAN_GROUPS]:

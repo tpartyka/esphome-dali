@@ -109,6 +109,24 @@ thread-safe and must only be touched from the main loop. POST responses are
 `200 "queued"` or `409 "<reason>"` (only these two status codes map correctly
 through web_server_idf).
 
+`expose_dashboard: true` requires an explicit `web_server:` block in the same
+YAML, with its `port` matching `dashboard_port` (`__init__.py`'s
+`_final_validate_dashboard` enforces this at compile time with a clear error
+otherwise). This is because ESPHome's API only reports a `webserver_port` in
+`DeviceInfo` (which Home Assistant uses to point a device's "Visit Device"
+link at it) when the official `web_server` component is compiled in — `dali`
+can't inject that component with a custom port on the user's behalf (AUTO_LOAD
+only auto-creates components with default config). Given that, the dashboard
+registers itself (`DaliWebDashboard::begin()`) onto the *shared*
+`web_server_base` instance instead of opening its own `AsyncWebServer`, at
+`DaliBusComponent`'s `HARDWARE` setup priority — earlier than `web_server`'s
+own (`WIFI - 1`) — so it's first in the handler list and `canHandle()`
+(always `true`) shadows the stock web_server UI entirely at every path; the
+stock UI is compiled in (extra flash) but never actually reachable. Registering
+early is safe because `web_server_base::add_handler()` just queues the handler
+until the underlying socket is actually opened later by `web_server`'s own
+`setup()`, well after the network stack is up.
+
 Endpoints:
 - `GET /api/lamps` — per-lamp status/control state (`addr`, `name`, `online`,
   `problem`, `on`, `brightness_pct`, `color_temp_mireds`, `groups`), plus a

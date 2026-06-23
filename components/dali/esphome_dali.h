@@ -9,7 +9,6 @@
 #include "esphome/core/preferences.h"
 #include "esphome/components/light/light_state.h"
 #include "esphome/components/switch/switch.h"
-#include "esphome/components/sun/sun.h"
 #include <esphome.h>
 #include <vector>
 #include "dali.h"
@@ -23,6 +22,11 @@ namespace esphome {
 
 namespace binary_sensor { class BinarySensor; }  // fwd: per-lamp availability sensors
 namespace sensor { class Sensor; }  // fwd: bus diagnostic counters
+// fwd: only a pointer is stored/compared-to-null here; the full type (and its
+// real header, which only exists in the build tree when `sun:` is actually
+// configured) is needed only in esphome_dali.cpp's update_circadian_(), guarded
+// by DALI_CIRCADIAN_ENABLED -- see CLAUDE.md's circadian section.
+namespace sun { class Sun; }
 
 namespace dali {
 
@@ -248,9 +252,19 @@ public:
     bool is_disconnected() const { return m_disconnected_; }
     bool is_bus_online() const { return m_bus_online_; }
 
-    /// @brief Whether the web dashboard is enabled, and which TCP port it listens on.
+    /// @brief Whether the web dashboard is enabled, and which TCP port it listens on
+    /// (must match the `web_server:` component's own `port` -- enforced at compile
+    /// time by __init__.py's _final_validate_dashboard).
     void set_dashboard_enabled(bool v) { m_dashboard_enabled = v; }
     void set_dashboard_port(uint16_t port) { m_dashboard_port = port; }
+#ifdef DALI_WEB_DASHBOARD_ENABLED
+    /// @brief The shared `web_server_base` instance (also used by `web_server:`)
+    /// that the dashboard registers itself onto in setup(), taking priority over
+    /// the stock web_server UI for every path (DaliWebDashboard::canHandle() always
+    /// returns true) since dali only wants the API's webserver_port side effect,
+    /// not the stock UI itself.
+    void set_web_server_base(web_server_base::WebServerBase* base) { m_web_server_base_ = base; }
+#endif
 
     /// @brief Circadian color temperature: elevation thresholds (degrees) for
     /// the day/night color-temperature interpolation, and the `sun:` component
@@ -524,15 +538,17 @@ private:
         uint8_t original_level = 0;
     } m_identify_;
 
-    // Web dashboard (lamps/groups/scenes). Only constructed if enabled. Starting
-    // AsyncWebServer::begin() before the network stack is up aborts (httpd_start
-    // hits an unmet FreeRTOS assertion), so the actual `begin()` call is deferred
-    // from setup() to the first loop() iteration where network::is_connected().
+    // Web dashboard (lamps/groups/scenes). Only constructed if enabled. Registers
+    // itself onto the shared web_server_base in setup() -- safe to do immediately
+    // (unlike the old standalone-AsyncWebServer approach, which had to defer
+    // begin() until network::is_connected() to avoid an httpd_start() abort): the
+    // actual socket isn't created until web_server:'s own setup() calls init(),
+    // at a later setup_priority (WIFI - 1, after the network stack is up).
     bool m_dashboard_enabled = false;
     uint16_t m_dashboard_port = 8080;
 #ifdef DALI_WEB_DASHBOARD_ENABLED
     DaliWebDashboard* m_dashboard_ = nullptr;
-    bool m_dashboard_started_ = false;
+    web_server_base::WebServerBase* m_web_server_base_ = nullptr;
 #endif
 
     // Fade in/out times in milliseconds (runtime-adjustable via HA number entities).

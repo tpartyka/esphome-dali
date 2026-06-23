@@ -54,8 +54,11 @@ struct DaliPendingAction {
 /// HTML page plus a couple of JSON endpoints, all backed by cached bus state.
 class DaliWebDashboard : public AsyncWebHandler {
 public:
-    /// @brief Start the HTTP server on `port` and begin serving the dashboard for `bus`.
-    void begin(uint16_t port, DaliBusComponent* bus);
+    /// @brief Register this handler on the shared `web_server_base` instance (also
+    /// used by `web_server:`) and begin serving the dashboard for `bus`. Safe to call
+    /// from setup(): add_handler() just queues the handler until web_server_base's
+    /// actual socket is opened later (by `web_server:`'s own setup()).
+    void begin(web_server_base::WebServerBase* server_base, DaliBusComponent* bus);
 
     /// @brief Drain any actions queued by the HTTP handler and apply them to the bus.
     /// Called once per DaliBusComponent::loop() iteration.
@@ -77,7 +80,6 @@ private:
     void handle_log_(AsyncWebServerRequest* request);
 
     DaliBusComponent* bus_{nullptr};
-    AsyncWebServer* server_{nullptr};
     LockFreeQueue<DaliPendingAction, 8> queue_;
 };
 

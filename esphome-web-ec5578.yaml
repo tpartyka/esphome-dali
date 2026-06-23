@@ -38,6 +38,12 @@ external_components:
       path: components
     components: [dali]
 
+# Required by dali's expose_dashboard so Home Assistant's "Visit Device" link
+# opens the cockpit: port must match dali's dashboard_port below. The dali
+# dashboard registers itself on this shared server and shadows the stock UI.
+web_server:
+  port: 8080
+
 # Bit-banged 1200 baud DALI bus (master)
 dali:
   id: dali_bus
