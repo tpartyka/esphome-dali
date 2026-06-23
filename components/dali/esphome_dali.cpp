@@ -959,14 +959,18 @@ void DaliBusComponent::create_group_controls() {
 
 void DaliBusComponent::create_circadian_switches_() {
 #ifdef USE_SWITCH
-    char name[32];
-    char id[32];
+    const int MAX_STR_LEN = 32;
     for (uint8_t g = 0; g < 16; g++) {
         if (!m_circadian_groups_[g].configured) continue;
 
+        // Heap-allocated (not stack): configure_entity_() stores this pointer as-is
+        // (no internal copy), so it must outlive this function -- matches the
+        // pattern in create_group_light_component()/create_scene_controls().
+        char* name = new char[MAX_STR_LEN];
+        char* id = new char[MAX_STR_LEN];
         auto* sw = new DaliCircadianSwitch { this, g };
-        snprintf(name, sizeof(name), "DALI Group %u Circadian", (unsigned) g);
-        snprintf(id, sizeof(id), "dali_group_%u_circadian", (unsigned) g);
+        snprintf(name, MAX_STR_LEN, "DALI Group %u Circadian", (unsigned) g);
+        snprintf(id, MAX_STR_LEN, "dali_group_%u_circadian", (unsigned) g);
         sw->configure_dynamic_entity(name, id);
         App.register_switch(sw);
         static_cast<AppRegistrationAccessor&>(App).register_component_(sw);
