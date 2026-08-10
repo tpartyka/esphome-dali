@@ -306,6 +306,17 @@ void dali::DaliLight::write_state(light::LightState *state) {
     if (!on) {
         pw.brightness = 0;
 
+        // Preserve the currently selected CT while the light is off. This keeps
+        // the first subsequent power-on from being mistaken for a manual CT
+        // override merely because last_temperature_ started at zero.
+        if (tc_supported_) {
+            float off_color_temperature;
+            float off_brightness;
+            state->current_values_as_ct(&off_color_temperature, &off_brightness);
+            last_temperature_ = static_cast<uint16_t>(
+                off_color_temperature * (dali_tc_warmest_ - dali_tc_coolest_) + dali_tc_coolest_);
+        }
+
         // A group/broadcast command reaches its members on the bus instantly, but
         // their individual HA entities only learn of it on the next poll cycle.
         // Optimistically reflect the new state now so HA stays in sync.

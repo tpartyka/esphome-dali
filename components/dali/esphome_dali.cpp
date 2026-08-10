@@ -825,7 +825,7 @@ void DaliBusComponent::create_group_lights_(uint64_t present_mask) {
     }
 
     uint8_t created = 0;
-    for (uint8_t g = 0; g < 16; g++) {
+    for (uint8_t g = 0; g < m_max_groups; g++) {
         if (!(active_groups & (1u << g))) continue;
         if (m_group_created_[g]) continue;  // already have a light for this group
         m_group_created_[g] = true;

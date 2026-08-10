@@ -148,6 +148,8 @@ public:
     /// one optimistic "DALI Group N" light per active group.
     void set_expose_groups(bool v) { m_expose_groups = v; }
     bool expose_groups() const { return m_expose_groups; }
+    /// @brief Maximum group numbers (0..max_groups-1) exposed as dynamic lights.
+    void set_max_groups(uint8_t max_groups) { m_max_groups = max_groups > 16 ? 16 : max_groups; }
 
     /// @brief Whether to expose 16 "DALI Scene N" recall buttons + a scene number and
     /// store/clear buttons.
@@ -477,6 +479,7 @@ private:
     // Group lights (auto-discovered). m_group_created_[g] guards against creating a
     // "DALI Group g" light twice across discovery passes.
     bool m_expose_groups = true;
+    uint8_t m_max_groups = 16;
     bool m_group_created_[16] = { false };
     // DaliLight* for each created "DALI Group N" light, used to read/publish a
     // group's own color temperature (scene CT capture/recall). nullptr if not created.

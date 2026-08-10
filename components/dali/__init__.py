@@ -233,6 +233,7 @@ async def to_code(config: OrderedDict):
     cg.add(var.set_expose_bus_diagnostics(config[CONF_EXPOSE_BUS_DIAGNOSTICS]))
     cg.add(var.set_persist_inventory(config[CONF_PERSIST_INVENTORY]))
     cg.add(var.set_expose_groups(config[CONF_EXPOSE_GROUPS]))
+    cg.add(var.set_max_groups(config[CONF_MAX_GROUPS]))
     cg.add(var.set_expose_scenes(config[CONF_EXPOSE_SCENES]))
     cg.add(var.set_dashboard_enabled(config[CONF_EXPOSE_DASHBOARD]))
     cg.add(var.set_dashboard_port(config[CONF_DASHBOARD_PORT]))
