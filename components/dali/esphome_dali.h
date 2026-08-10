@@ -445,6 +445,7 @@ private:
     DaliInputListener m_input_listener;
     bool m_input_devices = false;
     bool m_tx_collision_ = false;
+    bool m_inter_frame_pending_ = false;
 
     bool m_discovery = false;
     uint32_t discovery_start_ms_ = 0;  // millis() when the deferred-discovery wait began

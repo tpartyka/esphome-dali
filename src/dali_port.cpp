@@ -34,12 +34,18 @@ uint8_t DaliSerialBitBangPort::readByte() {
 }
 
 void DaliSerialBitBangPort::sendForwardFrame(uint8_t address, uint8_t data) {
+    if (m_inter_frame_pending) {
+        delayMicroseconds(INTER_FRAME_MIN_PERIOD);
+        m_inter_frame_pending = false;
+    }
+
     //Serial.print("TX: "); Serial.print(address, HEX); Serial.print(" "); Serial.println(data, HEX);
 
     writeBit(1); // START bit
     writeByte(address);
     writeByte(data);
     digitalWrite(m_txPin, LOW);
+    m_inter_frame_pending = true;
 }
 
 // void sendForwardFrameV2(uint8_t address, uint16_t data) {
@@ -54,17 +60,12 @@ void DaliSerialBitBangPort::sendForwardFrame(uint8_t address, uint8_t data) {
 // }
 
 uint8_t DaliSerialBitBangPort::receiveBackwardFrame(unsigned long timeout_ms) {
-    auto finish = [](uint8_t result) {
-        delayMicroseconds(INTER_FRAME_MIN_PERIOD);
-        return result;
-    };
-
     unsigned long startTime = millis();
     // Wait for START bit
     while (digitalRead(m_rxPin) == LOW) {
         if (millis() - startTime >= timeout_ms) {
             //Serial.println("No reply");
-            return finish(0);
+            return 0;
         }
     }
     delayMicroseconds(BIT_PERIOD); // Wait for first data bit
@@ -73,7 +74,7 @@ uint8_t DaliSerialBitBangPort::receiveBackwardFrame(unsigned long timeout_ms) {
     delayMicroseconds(BIT_PERIOD*2); // Wait for STOP bits
     //Serial.print("RX: "); Serial.println(data, HEX);
 
-    return finish(data);
+    return data;
 }
 
 #endif

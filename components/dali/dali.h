@@ -389,11 +389,10 @@ DaliBusManager(DaliPort& port)
 
     /// @brief Test if the new randomized address is <= the address programmed in SEARCH[H,M,L].
     bool compareSearchAddress(uint32_t search_address) {
-        port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRH, (search_address >> 16) & 0xFF); // Set SEARCHH
-        port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRM, (search_address >> 8) & 0xFF);  // Set SEARCHM
-        port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRL, search_address & 0xFF);         // Set SEARCHL
-
-        port.sendSpecialCommand(DaliSpecialCommand::COMPARE, 0);
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRH, (search_address >> 16) & 0xFF)) return false;
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRM, (search_address >> 8) & 0xFF)) return false;
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRL, search_address & 0xFF)) return false;
+        if (!port.sendSpecialCommand(DaliSpecialCommand::COMPARE, 0)) return false;
 
         const unsigned long timeout_ms = 10;
         return (port.receiveBackwardFrame(timeout_ms) == 0xFF);
@@ -426,7 +425,7 @@ DaliBusManager(DaliPort& port)
 
     void startAddressScan(bool already_initialized = false);
     bool findNextAddress(short_addr_t& short_addr, uint32_t& long_addr);
-    void withdrawCurrentDevice();
+    bool withdrawCurrentDevice();
     void endAddressScan();
 
     bool isControlGearPresent(short_addr_t addr = ADDR_BROADCAST) {
@@ -447,11 +446,11 @@ DaliBusManager(DaliPort& port)
 
 private:
     /// @brief Tell the device matching the address in SEARCH[H,M,L] to ignore COMPARE from now on.
-    void withdraw(uint32_t address) {
-        port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRH, (address >> 16) & 0xFF);
-        port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRM, (address >> 8) & 0xFF);
-        port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRL, address & 0xFF);
-        port.sendSpecialCommand(DaliSpecialCommand::WITHDRAW, 0);
+    bool withdraw(uint32_t address) {
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRH, (address >> 16) & 0xFF)) return false;
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRM, (address >> 8) & 0xFF)) return false;
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRL, address & 0xFF)) return false;
+        return port.sendSpecialCommand(DaliSpecialCommand::WITHDRAW, 0);
     }
 
     DaliPort& port;

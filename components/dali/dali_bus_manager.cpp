@@ -65,7 +65,12 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
 
         // Withdraw the device from the bus so it won't be found again in the next iteration.
         // Per DALI spec: binary search → PROGRAM_SHORT_ADDRESS → WITHDRAW
-        withdrawCurrentDevice();
+        if (!withdrawCurrentDevice()) {
+            DALI_LOGE("  Could not withdraw device 0x%.6x after programming", found_long);
+            this->_is_scanning = false;
+            terminate();
+            return 0xFF;
+        }
         delayMilliseconds(10);
 
         count++;
@@ -183,8 +188,8 @@ void DaliBusManager::endAddressScan() {
     }
 }
 
-void DaliBusManager::withdrawCurrentDevice() {
-    withdraw(_current_addr);
+bool DaliBusManager::withdrawCurrentDevice() {
+    return withdraw(_current_addr);
 }
 
 void DaliMaster::dumpStatusForDevice(uint8_t addr) {

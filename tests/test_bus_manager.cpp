@@ -75,6 +75,15 @@ TEST(compare_search_address_sends_searchhml_then_compare) {
     CHECK(result);
 }
 
+TEST(compare_search_address_returns_false_on_collision) {
+    MockDaliPort port;
+    DaliBusManager bus(port);
+    port.collision = true;
+
+    CHECK(!bus.compareSearchAddress(0x123456));
+    CHECK_EQ(port.receive_count, 0);
+}
+
 TEST(compare_search_address_false_on_non_0xff_response) {
     MockDaliPort port;
     DaliBusManager bus(port);
