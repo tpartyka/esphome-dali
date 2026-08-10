@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cerrno>
 #include <climits>
+#include <cctype>
 
 using namespace esphome;
 using namespace esphome::dali;
@@ -21,6 +22,9 @@ namespace {
 
 bool parse_int_strict(const std::string &text, int min_value, int max_value, int &value) {
     if (text.empty()) return false;
+    for (char c : text) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+    }
     errno = 0;
     char *end = nullptr;
     long parsed = std::strtol(text.c_str(), &end, 10);
