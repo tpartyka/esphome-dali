@@ -147,12 +147,20 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
     // Get short address
     port.sendSpecialCommand(DaliSpecialCommand::QUERY_SHORT_ADDRESS, 0);
     out_short_addr = port.receiveBackwardFrame();
-    if (out_short_addr == 0) {
+    // QUERY SHORT ADDRESS returns the encoded form 0AAAAAA1, not the raw
+    // 0..63 value. Validate the command bit and the full encoded range before
+    // removing it; checking against ADDR_SHORT_MAX would incorrectly reject
+    // every valid address from 32 through 63 (encoded 0x41..0x7F).
+    if (out_short_addr == 0 || out_short_addr == 0xFF) {
         DALI_LOGW("Short address not found for %.6x", addr);
         out_short_addr = 0xFF;
     }
-    else if (out_short_addr <= ADDR_SHORT_MAX) {
+    else if (out_short_addr <= 0x7F && (out_short_addr & DALI_COMMAND) != 0) {
         out_short_addr >>= 1; // remove command bit
+    }
+    else {
+        DALI_LOGW("Invalid encoded short address 0x%02X for %.6x", out_short_addr, addr);
+        out_short_addr = 0xFF;
     }
 
     return true;
