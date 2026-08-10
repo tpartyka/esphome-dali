@@ -64,6 +64,18 @@ TEST(circadian_set_out_of_range_group_is_noop) {
     CHECK_EQ(circadian_set(mask, 16, true), mask);
 }
 
+TEST(circadian_startup_write_is_not_manual_override) {
+    CHECK(!should_disable_for_manual_override(true, false, true, true));
+}
+
+TEST(circadian_manual_group_change_disables_after_startup) {
+    CHECK(should_disable_for_manual_override(true, false, false, true));
+}
+
+TEST(circadian_own_update_never_disables) {
+    CHECK(!should_disable_for_manual_override(true, true, false, true));
+}
+
 TEST(blob_size_is_uint16) {
     CHECK_EQ(sizeof(DaliCircadianBlob), sizeof(uint16_t));
 }

@@ -1023,11 +1023,13 @@ void DaliBusComponent::update_circadian_() {
 }
 
 void DaliBusComponent::add_to_group(uint8_t addr, uint8_t group) {
+    if (group >= 16) return;
     dali.scene.addToGroup(addr, group);
     if (addr <= ADDR_SHORT_MAX) m_group_membership_[addr] |= (uint16_t) (1u << group);
 
-    // Make the group immediately controllable if this is its first member.
-    if (m_expose_groups && !m_group_created_[group]) {
+    // Make the group immediately controllable if this is its first member, but
+    // never create a dynamic entity outside the configured capacity.
+    if (m_expose_groups && group < m_max_groups && !m_group_created_[group]) {
         m_group_created_[group] = true;
         create_group_light_component(group);
     }
@@ -1520,8 +1522,8 @@ void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
         }
     }
 
-    // Non critical delay
-    delayMicroseconds(INTER_FRAME_MIN_PERIOD);
+    // The receiver must start listening immediately after the forward frame;
+    // a valid backward frame may begin before the full inter-frame guard.
 }
 
 uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
@@ -1530,6 +1532,11 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
     // The backward frame is the device's response to us — not an input event.
     // (Un-suppressed automatically on every return path by the guard.)
     ListenerSuppressGuard suppress(&m_input_listener, m_input_devices);
+
+    auto finish = [](uint8_t result) {
+        delayMicroseconds(INTER_FRAME_MIN_PERIOD);
+        return result;
+    };
 
     unsigned long startTime = millis();
 
@@ -1546,7 +1553,7 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
             DALI_LOGD("RX: 00 (NACK, line stuck high)");
         }
         note_disconnected_(true);
-        return 0;
+        return finish(0);
     }
     note_disconnected_(false);
 
@@ -1557,7 +1564,7 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
             if (DEBUG_LOG_RXTX) {
                 DALI_LOGD("RX: 00 (NACK)");
             }
-            return 0;
+            return finish(0);
         }
     }
 
@@ -1575,7 +1582,6 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
         DALI_LOGD("RX: %02x", data);
     }
 
-    // Minimum time before we can send another forward frame.
-    delayMicroseconds(INTER_FRAME_MIN_PERIOD);
-    return data;
+    // Keep the minimum spacing after response handling, never before RX starts.
+    return finish(data);
 }

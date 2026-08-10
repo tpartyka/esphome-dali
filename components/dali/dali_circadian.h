@@ -27,6 +27,13 @@ inline uint16_t circadian_set(uint16_t mask, uint8_t group, bool enabled) {
     return mask & ~(uint16_t)(1u << group);
 }
 
+/// @return true when a color-temperature change should disable circadian control.
+/// Startup restoration and circadian's own update are never manual overrides.
+inline bool should_disable_for_manual_override(bool is_group, bool from_circadian,
+                                                bool startup_pending, bool temperature_changed) {
+    return is_group && !from_circadian && !startup_pending && temperature_changed;
+}
+
 /// @brief Interpolate a color temperature (in mireds) for the current sun
 /// elevation, linearly between `night_mireds` (at or below
 /// `night_elevation_deg`) and `day_mireds` (at or above `day_elevation_deg`).

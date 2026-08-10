@@ -316,6 +316,7 @@ void dali::DaliLight::write_state(light::LightState *state) {
             last_temperature_ = static_cast<uint16_t>(
                 off_color_temperature * (dali_tc_warmest_ - dali_tc_coolest_) + dali_tc_coolest_);
         }
+        startup_state_pending_ = false;
 
         // A group/broadcast command reaches its members on the bus instantly, but
         // their individual HA entities only learn of it on the next poll cycle.
@@ -340,14 +341,13 @@ void dali::DaliLight::write_state(light::LightState *state) {
 
         // Only update if temperature has changed, to allow faster brightness changes
         if (dali_color_temperature != last_temperature_) {
-            // A real color-temperature change on a circadian-enabled group that
-            // didn't come from update_circadian_() itself is a manual override
-            // (web dashboard or Home Assistant) -- disable circadian for this
-            // group so the next 60s tick doesn't silently revert it.
-            if (!circadian_call_in_progress_ && (address_ & ADDR_GROUP_MASK) != 0) {
+            if (dali_circadian::should_disable_for_manual_override(
+                    (address_ & ADDR_GROUP_MASK) != 0, circadian_call_in_progress_,
+                    startup_state_pending_, dali_color_temperature != last_temperature_)) {
                 bus->disable_circadian_for_manual_override(address_ & 0x0F);
             }
             last_temperature_ = dali_color_temperature;
+            startup_state_pending_ = false;
             pw.has_color = true;
             pw.color_temp_mired = dali_color_temperature;
         }

@@ -195,6 +195,7 @@ class DaliLight : public light::LightOutput, public Component {
     // write_state() only re-sends it on change. Per-instance: each DaliLight
     // (lamp or group) tracks its own last-sent value.
     uint16_t last_temperature_{0};
+    bool startup_state_pending_{true};
 
     // Cached initial state from DALI device queries, used by the static
     // trampoline passed to set_initial_state() (ESPHome 2026.4+ callback API).
