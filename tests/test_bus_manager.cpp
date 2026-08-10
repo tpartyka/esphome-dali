@@ -38,14 +38,13 @@ TEST(randomize_sends_randomize_twice) {
     CHECK_HEX_EQ(port.sent[0].address, static_cast<uint8_t>(DaliSpecialCommand::RANDOMIZE));
 }
 
-TEST(terminate_sends_terminate_twice) {
+TEST(terminate_sends_terminate_once) {
     MockDaliPort port;
     DaliBusManager bus(port);
 
     bus.terminate();
 
-    CHECK_EQ(port.sent.size(), 2u);
-    CHECK(port.sent[0] == port.sent[1]);
+    CHECK_EQ(port.sent.size(), 1u);
     CHECK_HEX_EQ(port.sent[0].address, static_cast<uint8_t>(DaliSpecialCommand::TERMINATE));
 }
 
@@ -110,7 +109,7 @@ TEST(program_short_address_returns_false_on_verify_failure) {
     CHECK(!bus.programShortAddress(5));
 }
 
-TEST(clear_short_address_programs_0x7f) {
+TEST(clear_short_address_programs_unassigned_marker) {
     MockDaliPort port;
     DaliBusManager bus(port);
 
@@ -118,7 +117,7 @@ TEST(clear_short_address_programs_0x7f) {
 
     CHECK_EQ(port.sent.size(), 1u);
     CHECK_HEX_EQ(port.sent[0].address, static_cast<uint8_t>(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS));
-    CHECK_HEX_EQ(port.sent[0].data, 0x7F);
+    CHECK_HEX_EQ(port.sent[0].data, 0xFF);
 }
 
 TEST(is_control_gear_present_defaults_to_broadcast) {

@@ -393,7 +393,6 @@ DaliBusManager(DaliPort& port)
     /// @brief Exit the initialization mode.
     void terminate() {
         port.sendSpecialCommand(DaliSpecialCommand::TERMINATE, 0);
-        port.sendSpecialCommand(DaliSpecialCommand::TERMINATE, 0);
     }
 
     bool programShortAddress(uint8_t addr) {
@@ -405,7 +404,8 @@ DaliBusManager(DaliPort& port)
     }
 
     void clearShortAddress() {
-        port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, 0x7F);
+        // PROGRAM SHORT ADDRESS uses 0xFF as the MASK/unassigned marker.
+        port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, 0xFF);
     }
 
     /// @brief Automatically assign sequential short addresses to all devices on the DALI bus
@@ -805,13 +805,13 @@ public:
     /// @brief Warm color temperature
     /// @param short_addr Device short address
     void stepWarmer(short_addr_t short_addr = ADDR_BROADCAST) {
-        port.sendExtendedQuery(short_addr, DaliColorCommand::TEMPERATURE_WARMER);
+        port.sendExtendedCommand(short_addr, DaliColorCommand::TEMPERATURE_WARMER);
     }
 
     /// @brief Cool color temperature
     /// @param short_addr Device short address
     void stepCooler(short_addr_t short_addr = ADDR_BROADCAST) {
-        port.sendExtendedQuery(short_addr, DaliColorCommand::TEMPERATURE_COOLER);
+        port.sendExtendedCommand(short_addr, DaliColorCommand::TEMPERATURE_COOLER);
     }
 
     uint16_t queryParameter(short_addr_t short_addr, DaliColorParam query) {

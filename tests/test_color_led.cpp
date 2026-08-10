@@ -128,16 +128,20 @@ TEST(set_color_temperature_without_fade_skips_activate) {
     CHECK_HEX_EQ(port.sent[4].data, static_cast<uint8_t>(DaliColorCommand::SET_TEMPERATURE));
 }
 
-TEST(step_warmer_and_cooler_send_extended_query) {
+TEST(step_warmer_and_cooler_send_extended_commands) {
     MockDaliPort port;
     DaliColorClass color(port);
 
     color.stepWarmer(1);
     color.stepCooler(1);
 
-    CHECK_EQ(port.sent.size(), 4u);
+    // Each action is an extended command: enable device type + two identical
+    // command frames, with no backward-frame read.
+    CHECK_EQ(port.sent.size(), 6u);
     CHECK_HEX_EQ(port.sent[1].data, static_cast<uint8_t>(DaliColorCommand::TEMPERATURE_WARMER));
-    CHECK_HEX_EQ(port.sent[3].data, static_cast<uint8_t>(DaliColorCommand::TEMPERATURE_COOLER));
+    CHECK(port.sent[1] == port.sent[2]);
+    CHECK_HEX_EQ(port.sent[4].data, static_cast<uint8_t>(DaliColorCommand::TEMPERATURE_COOLER));
+    CHECK(port.sent[4] == port.sent[5]);
 }
 
 TEST(query_parameter_reads_actual_level_then_color_value_msb_lsb) {
