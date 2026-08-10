@@ -34,7 +34,9 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
 
         if (reset) {
             // Program sequential short address (LSB is command bit, so keep it clear here)
-            port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, program_short | DALI_COMMAND);
+            if (!port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, program_short | DALI_COMMAND)) {
+                return 0xFF;
+            }
             verify_short = program_short;
         } else {
             // Use any reported short address from device if available
@@ -48,7 +50,9 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
 
         // Verify short address if we have one to verify
         if (verify_short != 0xFF) {
-            port.sendSpecialCommand(DaliSpecialCommand::VERIFY_SHORT_ADDRESS, verify_short | DALI_COMMAND);
+            if (!port.sendSpecialCommand(DaliSpecialCommand::VERIFY_SHORT_ADDRESS, verify_short | DALI_COMMAND)) {
+                return 0xFF;
+            }
             if (port.receiveBackwardFrame() == 0xFF) {
                 DALI_LOGD("Short address verified: %.2x", verify_short);
             } else {
@@ -145,7 +149,10 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
     out_long_addr = addr;
 
     // Get short address
-    port.sendSpecialCommand(DaliSpecialCommand::QUERY_SHORT_ADDRESS, 0);
+    if (!port.sendSpecialCommand(DaliSpecialCommand::QUERY_SHORT_ADDRESS, 0)) {
+        out_short_addr = 0xFF;
+        return false;
+    }
     out_short_addr = port.receiveBackwardFrame();
     // QUERY SHORT ADDRESS returns the encoded form 0AAAAAA1, not the raw
     // 0..63 value. Validate the command bit and the full encoded range before

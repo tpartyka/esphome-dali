@@ -1036,6 +1036,7 @@ void DaliBusComponent::add_to_group(uint8_t addr, uint8_t group) {
 }
 
 void DaliBusComponent::remove_from_group(uint8_t addr, uint8_t group) {
+    if (group >= 16) return;
     dali.scene.removeFromGroup(addr, group);
     if (addr <= ADDR_SHORT_MAX) m_group_membership_[addr] &= (uint16_t) ~(1u << group);
 }

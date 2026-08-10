@@ -6,6 +6,15 @@
 
 namespace {
 
+TEST(query_returns_nack_and_skips_rx_after_collision) {
+    MockDaliPort port;
+    DaliBusManager bus(port);
+    port.collision = true;
+
+    CHECK_EQ(port.sendQueryCommand(3, DaliCommand::QUERY_STATUS), 0u);
+    CHECK_EQ(port.receive_count, 0);
+}
+
 TEST(initialize_sends_initialise_twice_with_given_addr) {
     MockDaliPort port;
     DaliBusManager bus(port);

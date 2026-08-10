@@ -237,6 +237,8 @@ class DaliPort {
 public:
     virtual void sendForwardFrame(uint8_t address, uint8_t data) = 0;
     virtual uint8_t receiveBackwardFrame(unsigned long timeout_ms = DALI_BACKWARD_TIMEOUT_MS);
+    /// @brief Whether the most recent forward frame was aborted by a bus collision.
+    virtual bool lastTransmissionHadCollision() const { return false; }
 
 public:
     virtual void resetBus() { }
@@ -247,9 +249,10 @@ public:
     /// @return Response byte (0xFF: success, 0x00: failure, or other byte)
     uint8_t sendQueryCommand(short_addr_t addr, DaliCommand command) {
         sendForwardFrame(
-            (addr << 1) | DALI_COMMAND, 
+            (addr << 1) | DALI_COMMAND,
             static_cast<uint8_t>(command));
 
+        if (lastTransmissionHadCollision()) return 0;
         return receiveBackwardFrame();
     }
 
@@ -269,6 +272,7 @@ public:
         const uint8_t opcode = static_cast<uint8_t>(command);
 
         sendForwardFrame((addr << 1) | DALI_COMMAND, opcode);
+        if (lastTransmissionHadCollision()) return;
 
         const bool is_configuration_command = (opcode >= 0x20 && opcode <= 0x81);
         if (is_configuration_command) {
@@ -279,11 +283,12 @@ public:
     /// @brief Send a special command to the DALI bus
     /// @param special_command Special command affecting ALL devices on the bus
     /// @param data Parameter byte for the special command
-    /// @return Most special commands do not send a response
-    void sendSpecialCommand(DaliSpecialCommand command, uint8_t data) {
+    /// @return true if the frame was transmitted without a collision.
+    bool sendSpecialCommand(DaliSpecialCommand command, uint8_t data) {
         sendForwardFrame(
-            static_cast<uint8_t>(command), 
+            static_cast<uint8_t>(command),
             static_cast<uint8_t>(data));
+        return !lastTransmissionHadCollision();
     }
 
     /// @brief Send an extended device command to the DALI bus
@@ -294,10 +299,12 @@ public:
         sendSpecialCommand(
             DaliSpecialCommand::ENABLE_DEVICE_TYPE,
             static_cast<uint8_t>(device_type));
+        if (lastTransmissionHadCollision()) return 0;
 
         sendForwardFrame(
-            (addr << 1) | DALI_COMMAND, 
+            (addr << 1) | DALI_COMMAND,
             static_cast<uint8_t>(extended_command));
+        if (lastTransmissionHadCollision()) return 0;
         return receiveBackwardFrame();
     };
 
@@ -316,14 +323,16 @@ public:
         sendSpecialCommand(
             DaliSpecialCommand::ENABLE_DEVICE_TYPE,
             static_cast<uint8_t>(device_type));
+        if (lastTransmissionHadCollision()) return;
 
         // MUST send twice, no response
         sendForwardFrame(
-            (addr << 1) | DALI_COMMAND, 
+            (addr << 1) | DALI_COMMAND,
             static_cast<uint8_t>(extended_command));
+        if (lastTransmissionHadCollision()) return;
 
         sendForwardFrame(
-            (addr << 1) | DALI_COMMAND, 
+            (addr << 1) | DALI_COMMAND,
             static_cast<uint8_t>(extended_command));
     };
 

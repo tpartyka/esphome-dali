@@ -353,7 +353,7 @@ public: // DaliPort
     uint8_t receiveBackwardFrame(unsigned long timeout_ms = DALI_BACKWARD_TIMEOUT_MS) override;
 
     /// @brief Whether the most recent forward frame was aborted by a collision.
-    bool last_transmission_had_collision() const { return m_tx_collision_; }
+    bool lastTransmissionHadCollision() const override { return m_tx_collision_; }
 
 private:
     bool writeBit(bool bit);
