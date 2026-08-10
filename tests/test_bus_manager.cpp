@@ -127,6 +127,24 @@ TEST(program_short_address_returns_false_on_verify_failure) {
     CHECK(!bus.programShortAddress(5));
 }
 
+TEST(program_short_address_returns_false_on_collision_without_rx) {
+    MockDaliPort port;
+    DaliBusManager bus(port);
+    port.collision = true;
+
+    CHECK(!bus.programShortAddress(5));
+    CHECK_EQ(port.receive_count, 0);
+}
+
+TEST(auto_assign_returns_failure_on_initialise_collision) {
+    MockDaliPort port;
+    DaliBusManager bus(port);
+    port.collision = true;
+
+    CHECK_EQ(bus.autoAssignShortAddresses(), 0xFF);
+    CHECK(!port.sent.empty());
+}
+
 TEST(clear_short_address_programs_unassigned_marker) {
     MockDaliPort port;
     DaliBusManager bus(port);

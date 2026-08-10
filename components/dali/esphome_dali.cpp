@@ -482,7 +482,11 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
                     short_addr_t free_addr = lowest_free_address_(addr_used);
                     if (free_addr == 0xFF) {
                         DALI_LOGE("  No free short address available (bus full)");
-                        dali.bus_manager.withdrawCurrentDevice();
+                        if (!dali.bus_manager.withdrawCurrentDevice()) {
+                            DALI_LOGE("  Could not withdraw device after bus collision");
+                            dali.bus_manager.endAddressScan();
+                            return;
+                        }
                         short_addr = 0xFF;
                         continue;
                     }
@@ -492,7 +496,11 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
 
                     if (!dali.bus_manager.programShortAddress(short_addr)) {
                         DALI_LOGE("  Could not program short address");
-                        dali.bus_manager.withdrawCurrentDevice();
+                        if (!dali.bus_manager.withdrawCurrentDevice()) {
+                            DALI_LOGE("  Could not withdraw device after bus collision");
+                            dali.bus_manager.endAddressScan();
+                            return;
+                        }
                         short_addr = 0xFF;
                         continue;
                     }
@@ -503,7 +511,11 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
             }
 
             // Withdraw after address is confirmed (spec order: find → program → withdraw)
-            dali.bus_manager.withdrawCurrentDevice();
+            if (!dali.bus_manager.withdrawCurrentDevice()) {
+                            DALI_LOGE("  Could not withdraw device after bus collision");
+                            dali.bus_manager.endAddressScan();
+                            return;
+                        }
 
             // Dynamic component creation (if not defined in YAML)
             if (m_addresses[short_addr]) {
@@ -518,7 +530,11 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
             if (mode == DaliInitMode::DiscoverOnly) {
                 DALI_LOGI("  Device %.6x @ --", long_addr);
                 DALI_LOGW("  No short address assigned!");
-                dali.bus_manager.withdrawCurrentDevice();
+                if (!dali.bus_manager.withdrawCurrentDevice()) {
+                            DALI_LOGE("  Could not withdraw device after bus collision");
+                            dali.bus_manager.endAddressScan();
+                            return;
+                        }
                 continue;
             }
             else {
@@ -527,7 +543,11 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
                 short_addr_t free_addr = lowest_free_address_(addr_used);
                 if (free_addr == 0xFF) {
                     DALI_LOGE("  No free short address available (bus full)");
-                    dali.bus_manager.withdrawCurrentDevice();
+                    if (!dali.bus_manager.withdrawCurrentDevice()) {
+                            DALI_LOGE("  Could not withdraw device after bus collision");
+                            dali.bus_manager.endAddressScan();
+                            return;
+                        }
                     short_addr = 0xFF;
                     continue;
                 }
@@ -537,14 +557,22 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
 
                 if (!dali.bus_manager.programShortAddress(short_addr)) {
                     DALI_LOGE("  Could not program short address");
-                    dali.bus_manager.withdrawCurrentDevice();
+                    if (!dali.bus_manager.withdrawCurrentDevice()) {
+                            DALI_LOGE("  Could not withdraw device after bus collision");
+                            dali.bus_manager.endAddressScan();
+                            return;
+                        }
                     short_addr = 0xFF;
                     continue;
                 }
 
                 // Withdraw after successful address programming
                 // (spec order: find → program → withdraw)
-                dali.bus_manager.withdrawCurrentDevice();
+                if (!dali.bus_manager.withdrawCurrentDevice()) {
+                            DALI_LOGE("  Could not withdraw device after bus collision");
+                            dali.bus_manager.endAddressScan();
+                            return;
+                        }
 
                 DALI_LOGI("  Device %.6x @ %.2x", long_addr, short_addr);
 

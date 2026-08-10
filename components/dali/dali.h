@@ -372,27 +372,40 @@ DaliBusManager(DaliPort& port)
     /// @brief Put a device into intialisation mode.
     /// @remark Required before you can send other special commands. Expires after 15 minutes, or when you send TERMINATE.
     /// @param addr Which devices to affect
-    void initialize(uint8_t addr) {
+    bool initialize(uint8_t addr) {
         // addr:
         // 0000 0000 : All devices
         // 0AAA AAA1 : Only devices with this address
         // 1111 1111 : Only devices without a short address
-        port.sendSpecialCommand(DaliSpecialCommand::INITIALISE, addr);
-        port.sendSpecialCommand(DaliSpecialCommand::INITIALISE, addr);
+        if (!port.sendSpecialCommand(DaliSpecialCommand::INITIALISE, addr)) return false;
+        return port.sendSpecialCommand(DaliSpecialCommand::INITIALISE, addr);
     }
 
     /// @brief Tell all devices in initialize mode to randomize their addresses.
-    void randomize() {
-        port.sendSpecialCommand(DaliSpecialCommand::RANDOMIZE, 0);
-        port.sendSpecialCommand(DaliSpecialCommand::RANDOMIZE, 0);
+    bool randomize() {
+        if (!port.sendSpecialCommand(DaliSpecialCommand::RANDOMIZE, 0)) return false;
+        return port.sendSpecialCommand(DaliSpecialCommand::RANDOMIZE, 0);
     }
 
     /// @brief Test if the new randomized address is <= the address programmed in SEARCH[H,M,L].
     bool compareSearchAddress(uint32_t search_address) {
-        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRH, (search_address >> 16) & 0xFF)) return false;
-        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRM, (search_address >> 8) & 0xFF)) return false;
-        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRL, search_address & 0xFF)) return false;
-        if (!port.sendSpecialCommand(DaliSpecialCommand::COMPARE, 0)) return false;
+        _scan_collision = false;
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRH, (search_address >> 16) & 0xFF)) {
+            _scan_collision = true;
+            return false;
+        }
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRM, (search_address >> 8) & 0xFF)) {
+            _scan_collision = true;
+            return false;
+        }
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRL, search_address & 0xFF)) {
+            _scan_collision = true;
+            return false;
+        }
+        if (!port.sendSpecialCommand(DaliSpecialCommand::COMPARE, 0)) {
+            _scan_collision = true;
+            return false;
+        }
 
         const unsigned long timeout_ms = 10;
         return (port.receiveBackwardFrame(timeout_ms) == 0xFF);
@@ -405,9 +418,9 @@ DaliBusManager(DaliPort& port)
 
     bool programShortAddress(uint8_t addr) {
         addr = ((addr & 0x3F) << 1) | DALI_COMMAND;
-        port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, addr);
+        if (!port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, addr)) return false;
 
-        port.sendSpecialCommand(DaliSpecialCommand::VERIFY_SHORT_ADDRESS, addr);
+        if (!port.sendSpecialCommand(DaliSpecialCommand::VERIFY_SHORT_ADDRESS, addr)) return false;
         return (port.receiveBackwardFrame() == 0xFF);
     }
 
@@ -455,6 +468,7 @@ private:
 
     DaliPort& port;
     bool _is_scanning = false;
+    bool _scan_collision = false;
     uint32_t _current_addr = 0;
 };
 

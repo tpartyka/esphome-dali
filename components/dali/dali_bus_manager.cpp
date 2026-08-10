@@ -10,12 +10,20 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
     }
 
     // Put matching devices into initialization mode
-    initialize(assign);
+    if (!initialize(assign)) {
+        DALI_LOGE("Could not enter initialization mode due to bus collision");
+        terminate();
+        return 0xFF;
+    }
 
     // If requested, randomize addresses before scanning
     if (reset) {
         DALI_LOGI("Randomizing addresses");
-        randomize();
+        if (!randomize()) {
+            DALI_LOGE("Could not randomize addresses due to bus collision");
+            terminate();
+            return 0xFF;
+        }
         delayMilliseconds(1000);
     }
 
@@ -109,6 +117,7 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
 
     // Shortcut: test if we are done
     if (!compareSearchAddress(0xFFFFFF)) {
+        if (_scan_collision) _is_scanning = false;
         return false;
     }
 
@@ -119,6 +128,10 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
 
         // True if actual address <= search_address
         bool compare_result = compareSearchAddress(addr);
+        if (_scan_collision) {
+            _is_scanning = false;
+            return false;
+        }
         //DALI_LOGD("Test addr %.6x %.2x", addr, compare_result);
         if (compare_result) {
             addr &= ~bit; // Clear the bit
@@ -129,6 +142,10 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
 
     // Final step in the search, set last bit if no longer matching
     if (!compareSearchAddress(addr)) {
+        if (_scan_collision) {
+            _is_scanning = false;
+            return false;
+        }
         addr++;
     }
 
@@ -144,6 +161,7 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
 
     // Sanity check: Address should still return true for comparison
     if (!compareSearchAddress(addr)) {
+        if (_scan_collision) _is_scanning = false;
         DALI_LOGE("ERROR: Address did not match?");
         return false;
     }
