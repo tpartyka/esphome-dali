@@ -92,7 +92,7 @@ public:
     }
 
     void register_static_addr(short_addr_t short_addr) {
-        if (short_addr < ADDR_SHORT_MAX) {
+        if (short_addr <= ADDR_SHORT_MAX) {
             m_addresses[short_addr] = 0xFFFFFF;
         }
     }
@@ -350,14 +350,17 @@ public: // DaliPort
     void sendForwardFrame(uint8_t address, uint8_t data) override;
     uint8_t receiveBackwardFrame(unsigned long timeout_ms = DALI_BACKWARD_TIMEOUT_MS) override;
 
+    /// @brief Whether the most recent forward frame was aborted by a collision.
+    bool last_transmission_had_collision() const { return m_tx_collision_; }
+
 private:
-    void writeBit(bool bit);
+    bool writeBit(bool bit);
     /// @brief If `input_devices` is enabled, sample the RX pin during a half-bit
     /// where `writeBit()` is releasing the bus (per dali_tx::master_releasing) and
     /// bump the collision counter if another master is driving it low. half: 0 =
     /// first half-bit, 1 = second. No-op (and no extra delay) if input_devices is off.
-    void check_collision_(bool bit, int half);
-    void writeByte(uint8_t b);
+    bool check_collision_(bool bit, int half);
+    bool writeByte(uint8_t b);
     uint8_t readByte();
 
     /// @brief Return the lowest short address (0..63) not marked used, or 0xFF if
@@ -439,6 +442,7 @@ private:
 
     DaliInputListener m_input_listener;
     bool m_input_devices = false;
+    bool m_tx_collision_ = false;
 
     bool m_discovery = false;
     uint32_t discovery_start_ms_ = 0;  // millis() when the deferred-discovery wait began

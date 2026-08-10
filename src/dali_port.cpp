@@ -5,6 +5,7 @@
 #define QUARTER_BIT_PERIOD 208
 #define HALF_BIT_PERIOD 416
 #define BIT_PERIOD 833
+#define INTER_FRAME_MIN_PERIOD (HALF_BIT_PERIOD * 22)
 
 void DaliSerialBitBangPort::writeBit(bool bit) {
     // NOTE: output is inverted - HIGH will pull the bus to 0V (logic low)
@@ -39,8 +40,7 @@ void DaliSerialBitBangPort::sendForwardFrame(uint8_t address, uint8_t data) {
     writeByte(address);
     writeByte(data);
     digitalWrite(m_txPin, LOW);
-    delayMicroseconds(HALF_BIT_PERIOD*2);
-    delayMicroseconds(BIT_PERIOD*4); // Optional, for clarity in scope trace
+    delayMicroseconds(INTER_FRAME_MIN_PERIOD);
 }
 
 // void sendForwardFrameV2(uint8_t address, uint16_t data) {

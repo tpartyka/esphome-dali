@@ -25,7 +25,7 @@
 #include "dali_tx_collision.h"
 
 //static const char *const TAG = "dali";
-static const bool DEBUG_LOG_RXTX = true; // NOTE: Will probably trigger WDT
+static const bool DEBUG_LOG_RXTX = false;
 
 using namespace esphome;
 using namespace dali;
@@ -1431,40 +1431,51 @@ void DaliBusComponent::dump_config() {
 #define QUARTER_BIT_PERIOD 208
 #define HALF_BIT_PERIOD 416
 #define BIT_PERIOD 833
+#define INTER_FRAME_MIN_PERIOD (HALF_BIT_PERIOD * 22)
 
 // Collision sampling splits each half-bit's delay around a single digital_read(),
 // so the total delay (and thus the Manchester bit period) is unchanged.
 #define HALF_BIT_PERIOD_PRE  (HALF_BIT_PERIOD - 6) / 2
 #define HALF_BIT_PERIOD_POST (HALF_BIT_PERIOD - 6) - HALF_BIT_PERIOD_PRE
 
-void DaliBusComponent::check_collision_(bool bit, int half) {
-    if (!m_input_devices) return;
+bool DaliBusComponent::check_collision_(bool bit, int half) {
+    if (!m_input_devices) return false;
     // rx_pin is configured `inverted: true`, matching the TX convention where
     // HIGH = assert (drive bus to 0V): digital_read() == HIGH means the bus
     // reads as asserted.
     bool rx_asserted = (m_rxPin->digital_read() == HIGH);
-    if (dali_tx::is_collision(bit, half, rx_asserted)) {
-        note_collision_();
-    }
+    if (!dali_tx::is_collision(bit, half, rx_asserted)) return false;
+
+    m_tx_collision_ = true;
+    note_collision_();
+    return true;
 }
 
-void DaliBusComponent::writeBit(bool bit) {
+bool DaliBusComponent::writeBit(bool bit) {
     // Output is inverted: HIGH pulls the bus to 0V.
     m_txPin->digital_write(bit ? HIGH : LOW);
     delayMicroseconds(HALF_BIT_PERIOD_PRE);
-    check_collision_(bit, 0);
+    if (check_collision_(bit, 0)) {
+        m_txPin->digital_write(LOW);
+        return false;
+    }
     delayMicroseconds(HALF_BIT_PERIOD_POST);
     m_txPin->digital_write(bit ? LOW : HIGH);
     delayMicroseconds(HALF_BIT_PERIOD_PRE);
-    check_collision_(bit, 1);
+    if (check_collision_(bit, 1)) {
+        m_txPin->digital_write(LOW);
+        return false;
+    }
     delayMicroseconds(HALF_BIT_PERIOD_POST);
+    return true;
 }
 
-void DaliBusComponent::writeByte(uint8_t b) {
+bool DaliBusComponent::writeByte(uint8_t b) {
     for (int i = 0; i < 8; i++) {
-        writeBit(b & 0x80);
+        if (!writeBit(b & 0x80)) return false;
         b <<= 1;
     }
+    return true;
 }
 
 uint8_t DaliBusComponent::readByte() {
@@ -1487,6 +1498,7 @@ void DaliBusComponent::resetBus() {
 void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
     // Don't let the input listener decode our own transmission (un-suppressed on exit).
     ListenerSuppressGuard suppress(&m_input_listener, m_input_devices);
+    m_tx_collision_ = false;
 
     if (DEBUG_LOG_RXTX) {
         DALI_LOGD("TX: %02x %02x", address, data);
@@ -1498,16 +1510,18 @@ void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
         // This is timing critical
         InterruptLock lock;
 
-        writeBit(1); // START bit
-        writeByte(address);
-        writeByte(data);
+        bool complete = writeBit(1); // START bit
+        if (complete) complete = writeByte(address);
+        if (complete) complete = writeByte(data);
         // Always leave the bus driven to idle (no half-finished frame on the wire).
         m_txPin->digital_write(LOW);
+        if (!complete) {
+            DALI_LOGW("TX aborted after DALI bus collision");
+        }
     }
 
     // Non critical delay
-    delayMicroseconds(HALF_BIT_PERIOD*2);
-    delayMicroseconds(BIT_PERIOD*4); // Optional, for clarity in scope trace
+    delayMicroseconds(INTER_FRAME_MIN_PERIOD);
 }
 
 uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
