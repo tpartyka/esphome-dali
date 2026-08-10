@@ -433,15 +433,27 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
     if (mode != DaliInitMode::DiscoverOnly) {
         if (mode == DaliInitMode::InitializeAll) {
             DALI_LOGI("Randomizing addresses for *all* DALI devices");
-            dali.bus_manager.initialize(ASSIGN_ALL);
+            if (!dali.bus_manager.initialize(ASSIGN_ALL)) {
+                DALI_LOGE("Could not initialize DALI devices due to bus collision");
+                dali.bus_manager.terminate();
+                return;
+            }
         }
         else if (mode == DaliInitMode::InitializeUnassigned) {
             // Only randomize devices without an assigned short address
             DALI_LOGI("Randomizing addresses for unassigned DALI devices");
-            dali.bus_manager.initialize(ASSIGN_UNINITIALIZED);
+            if (!dali.bus_manager.initialize(ASSIGN_UNINITIALIZED)) {
+                DALI_LOGE("Could not initialize unassigned DALI devices due to bus collision");
+                dali.bus_manager.terminate();
+                return;
+            }
         }
 
-        dali.bus_manager.randomize();
+        if (!dali.bus_manager.randomize()) {
+            DALI_LOGE("Could not randomize DALI addresses due to bus collision");
+            dali.bus_manager.terminate();
+            return;
+        }
 
         // DALI spec requires minimum 100ms after RANDOMIZE for devices to generate random address.
         // Use 500ms to be safe with slower devices.
@@ -495,14 +507,9 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
                     DALI_LOGD("  Duplicate short address detected, reassigning to: %.2x", short_addr);
 
                     if (!dali.bus_manager.programShortAddress(short_addr)) {
-                        DALI_LOGE("  Could not program short address");
-                        if (!dali.bus_manager.withdrawCurrentDevice()) {
-                            DALI_LOGE("  Could not withdraw device after bus collision");
-                            dali.bus_manager.endAddressScan();
-                            return;
-                        }
-                        short_addr = 0xFF;
-                        continue;
+                        DALI_LOGE("  Could not program short address; aborting discovery");
+                        dali.bus_manager.endAddressScan();
+                        return;
                     }
                 }
             }
@@ -556,14 +563,9 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
                 DALI_LOGI("  Assigning short address: %.2x", short_addr);
 
                 if (!dali.bus_manager.programShortAddress(short_addr)) {
-                    DALI_LOGE("  Could not program short address");
-                    if (!dali.bus_manager.withdrawCurrentDevice()) {
-                            DALI_LOGE("  Could not withdraw device after bus collision");
-                            dali.bus_manager.endAddressScan();
-                            return;
-                        }
-                    short_addr = 0xFF;
-                    continue;
+                    DALI_LOGE("  Could not program short address; aborting discovery");
+                    dali.bus_manager.endAddressScan();
+                    return;
                 }
 
                 // Withdraw after successful address programming

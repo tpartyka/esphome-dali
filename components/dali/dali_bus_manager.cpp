@@ -43,6 +43,8 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
         if (reset) {
             // Program sequential short address (LSB is command bit, so keep it clear here)
             if (!port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, program_short | DALI_COMMAND)) {
+                this->_is_scanning = false;
+                terminate();
                 return 0xFF;
             }
             verify_short = program_short;
@@ -59,6 +61,8 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
         // Verify short address if we have one to verify
         if (verify_short != 0xFF) {
             if (!port.sendSpecialCommand(DaliSpecialCommand::VERIFY_SHORT_ADDRESS, verify_short | DALI_COMMAND)) {
+                this->_is_scanning = false;
+                terminate();
                 return 0xFF;
             }
             if (port.receiveBackwardFrame() == 0xFF) {
@@ -97,11 +101,11 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
 
 void DaliBusManager::startAddressScan(bool already_initialized) {
     if (!this->_is_scanning) {
-        this->_is_scanning = true;
         if (!already_initialized) {
             // Put all devices on the bus into initialization mode
-            initialize(ASSIGN_ALL);
+            if (!initialize(ASSIGN_ALL)) return;
         }
+        this->_is_scanning = true;
         // If already_initialized=true, caller already sent INITIALIZE with correct mode
         // (e.g. ASSIGN_UNINITIALIZED). Re-sending initialize(ASSIGN_ALL) would override it.
     }
@@ -174,6 +178,8 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
     // Get short address
     if (!port.sendSpecialCommand(DaliSpecialCommand::QUERY_SHORT_ADDRESS, 0)) {
         out_short_addr = 0xFF;
+        _is_scanning = false;
+        terminate();
         return false;
     }
     out_short_addr = port.receiveBackwardFrame();
