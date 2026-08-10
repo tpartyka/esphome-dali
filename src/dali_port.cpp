@@ -69,7 +69,7 @@ uint8_t DaliSerialBitBangPort::receiveBackwardFrame(unsigned long timeout_ms) {
     delayMicroseconds(BIT_PERIOD*2); // Wait for STOP bits
     //Serial.print("RX: "); Serial.println(data, HEX);
 
-    delayMicroseconds(BIT_PERIOD*8); // Minimum time before we can send another forward frame
+    delayMicroseconds(INTER_FRAME_MIN_PERIOD); // Minimum time before next forward frame
     return data;
 }
 

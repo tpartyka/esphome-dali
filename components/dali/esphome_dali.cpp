@@ -1575,7 +1575,7 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
         DALI_LOGD("RX: %02x", data);
     }
 
-    // Minimum time before we can send another forward frame
-    delayMicroseconds(BIT_PERIOD*8);
+    // Minimum time before we can send another forward frame.
+    delayMicroseconds(INTER_FRAME_MIN_PERIOD);
     return data;
 }
