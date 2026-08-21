@@ -48,13 +48,23 @@ CONF_TARGET = "target"
 CONF_ADDRESS = "address"
 CONF_DALI_API_CLIENT_ID = "dali_api_client_id"
 
-SCENE_ACTION_SCHEMA = cv.Schema(
-    {
-        cv.GenerateID(CONF_DALI_API_CLIENT_ID): cv.use_id(DaliApiClient),
-        cv.Required(CONF_SCENE): cv.templatable(cv.int_range(min=0, max=15)),
-        cv.Optional(CONF_TARGET, default="all"): cv.one_of("all", "lamp", "group", lower=True),
-        cv.Optional(CONF_ADDRESS, default=0): cv.templatable(cv.int_range(min=0, max=63)),
-    }
+def validate_scene_target_address(config):
+    address = config[CONF_ADDRESS]
+    if config[CONF_TARGET] == "group" and isinstance(address, int) and address > 15:
+        raise cv.Invalid("group target address must be in the range 0..15")
+    return config
+
+
+SCENE_ACTION_SCHEMA = cv.All(
+    cv.Schema(
+        {
+            cv.GenerateID(CONF_DALI_API_CLIENT_ID): cv.use_id(DaliApiClient),
+            cv.Required(CONF_SCENE): cv.templatable(cv.int_range(min=0, max=15)),
+            cv.Optional(CONF_TARGET, default="all"): cv.one_of("all", "lamp", "group", lower=True),
+            cv.Optional(CONF_ADDRESS, default=0): cv.templatable(cv.int_range(min=0, max=63)),
+        }
+    ),
+    validate_scene_target_address,
 )
 
 
