@@ -1,4 +1,5 @@
 #include "esphome_dali_input.h"
+#include "dali_input_frame.h"
 #include "esphome/core/log.h"
 
 namespace esphome {
@@ -156,7 +157,7 @@ void DaliInputListener::process_edge_(uint32_t now_us) {
 }
 
 void DaliInputListener::finalize_frame_() {
-  if (this->rx_bits_ >= 16) {
+  if (dali_input::is_supported_forward_frame_length(this->rx_bits_)) {
     DaliInputFrame f;
     f.bits = this->rx_bits_;
     f.raw = this->rx_raw_;

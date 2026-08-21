@@ -21,7 +21,9 @@
 #include "esphome/components/sensor/sensor.h"
 #endif
 #include "dali_bus_health.h"
+#include "dali_backward_frame.h"
 #include "dali_inventory.h"
+#include "dali_scene_metadata.h"
 #include "dali_tx_collision.h"
 
 //static const char *const TAG = "dali";
@@ -315,6 +317,7 @@ void DaliBusComponent::setup() {
     // Dashboard-only custom names (lamps/groups/scenes) are independent of
     // discovery/inventory and the underlying HA entities, so always restore them.
     restore_names_();
+    restore_scene_color_temps_();
 
     // Always expose the "Run DALI Discovery" and "Reboot" buttons (no YAML required).
     // They must be registered here in setup(), before the API client connects,
@@ -689,6 +692,24 @@ void DaliBusComponent::restore_names_() {
 void DaliBusComponent::save_names_() {
     if (m_names_pref_.save(&m_names_)) {
         DALI_LOGD("Saved DALI custom names");
+    }
+}
+
+void DaliBusComponent::restore_scene_color_temps_() {
+    m_scene_color_temp_pref_ =
+        global_preferences->make_preference<dali_scene_metadata::SceneColorTemperatureBlob>(0xDA111104u);
+    dali_scene_metadata::SceneColorTemperatureBlob loaded{};
+    if (!m_scene_color_temp_pref_.load(&loaded)) {
+        DALI_LOGD("No saved DALI scene color-temperature metadata to restore");
+        return;
+    }
+    m_scene_color_temps_ = loaded;
+    DALI_LOGI("Restored DALI scene color-temperature metadata from flash");
+}
+
+void DaliBusComponent::save_scene_color_temps_() {
+    if (m_scene_color_temp_pref_.save(&m_scene_color_temps_)) {
+        DALI_LOGD("Saved DALI scene color-temperature metadata");
     }
 }
 
@@ -1136,8 +1157,13 @@ void DaliBusComponent::do_scene_action(uint8_t target_addr, uint8_t scene, Scene
                 }
             }
 
-            if (!m_scene_color_temp_[scene].has_value()) break;
-            uint16_t ct = m_scene_color_temp_[scene].value();
+            if (!is_group && !is_lamp) break;
+            const uint8_t metadata_target = is_group
+                                                ? dali_scene_metadata::group_target(target_addr & 0x0F)
+                                                : dali_scene_metadata::lamp_target(target_addr);
+            const uint16_t ct =
+                dali_scene_metadata::color_temperature(m_scene_color_temps_, metadata_target, scene);
+            if (ct == dali_scene_metadata::NO_COLOR_TEMPERATURE) break;
             if (is_group) {
                 uint8_t group = target_addr & 0x0F;
                 DaliLight* gl = m_group_lights_[group];
@@ -1148,7 +1174,7 @@ void DaliBusComponent::do_scene_action(uint8_t target_addr, uint8_t scene, Scene
                     gl->publish_optimistic_state(update);
                     sync_group_member_states(group, update);
                 }
-            } else if (is_lamp) {
+            } else {
                 for (DaliLight* light : m_pollable_lights) {
                     if (light->address() != target_addr) continue;
                     if (light->supports_color_temp()) {
@@ -1164,28 +1190,41 @@ void DaliBusComponent::do_scene_action(uint8_t target_addr, uint8_t scene, Scene
         }
         case SceneAction::Store: {
             dali.scene.storeScene(target_addr, scene);
-            m_scene_color_temp_[scene] = {};
             if (is_group) {
+                const uint8_t metadata_target = dali_scene_metadata::group_target(target_addr & 0x0F);
+                dali_scene_metadata::remove_scene(m_scene_color_temps_, metadata_target, scene);
                 DaliLight* gl = m_group_lights_[target_addr & 0x0F];
                 if (gl != nullptr && gl->supports_color_temp()) {
-                    uint16_t ct = gl->current_color_temp_mired();
-                    if (ct != 0) m_scene_color_temp_[scene] = ct;
+                    const uint16_t ct = gl->current_color_temp_mired();
+                    dali_scene_metadata::set_color_temperature(m_scene_color_temps_, metadata_target, scene, ct);
                 }
+                save_scene_color_temps_();
             } else if (is_lamp) {
+                const uint8_t metadata_target = dali_scene_metadata::lamp_target(target_addr);
+                dali_scene_metadata::remove_scene(m_scene_color_temps_, metadata_target, scene);
                 for (DaliLight* light : m_pollable_lights) {
                     if (light->address() != target_addr) continue;
                     if (light->supports_color_temp()) {
-                        uint16_t ct = dali.color.getColorTemperature(target_addr);
-                        if (ct != 0) m_scene_color_temp_[scene] = ct;
+                        const uint16_t ct = dali.color.getColorTemperature(target_addr);
+                        dali_scene_metadata::set_color_temperature(m_scene_color_temps_, metadata_target, scene, ct);
                     }
                     break;
                 }
+                save_scene_color_temps_();
             }
             break;
         }
         case SceneAction::Remove:
             dali.scene.removeScene(target_addr, scene);
-            m_scene_color_temp_[scene] = {};
+            if (is_group) {
+                dali_scene_metadata::remove_scene(
+                    m_scene_color_temps_, dali_scene_metadata::group_target(target_addr & 0x0F), scene);
+                save_scene_color_temps_();
+            } else if (is_lamp) {
+                dali_scene_metadata::remove_scene(
+                    m_scene_color_temps_, dali_scene_metadata::lamp_target(target_addr), scene);
+                save_scene_color_temps_();
+            }
             break;
     }
 }
@@ -1511,14 +1550,31 @@ bool DaliBusComponent::writeByte(uint8_t b) {
     return true;
 }
 
-uint8_t DaliBusComponent::readByte() {
-    uint8_t byte = 0;
-    for (int i = 0; i < 8; i++) {
-        byte <<= 1;
-        byte |= m_rxPin->digital_read();
-        delayMicroseconds(BIT_PERIOD); // 1/1200 seconds
+bool DaliBusComponent::readBackwardFrame_(uint8_t &data) {
+    // The start transition was already observed by receiveBackwardFrame(): it is
+    // the first (asserted) half of the mandatory logical-1 start symbol.
+    // Sample its second half, then both halves of every data bit and the first
+    // complete stop bit. A frame is accepted only if it is structurally valid
+    // Manchester, not merely because eight GPIO samples form a non-zero byte.
+    bool halves[20];
+    halves[0] = true;
+
+    delayMicroseconds(HALF_BIT_PERIOD + QUARTER_BIT_PERIOD);
+    halves[1] = m_rxPin->digital_read() == HIGH;
+
+    for (int bit = 0; bit < 8; bit++) {
+        delayMicroseconds(HALF_BIT_PERIOD);
+        halves[2 + bit * 2] = m_rxPin->digital_read() == HIGH;
+        delayMicroseconds(HALF_BIT_PERIOD);
+        halves[3 + bit * 2] = m_rxPin->digital_read() == HIGH;
     }
-    return byte;
+
+    delayMicroseconds(HALF_BIT_PERIOD);
+    halves[18] = m_rxPin->digital_read() == HIGH;
+    delayMicroseconds(HALF_BIT_PERIOD);
+    halves[19] = m_rxPin->digital_read() == HIGH;
+
+    return dali_rx::decode_backward_frame_halves(halves, data);
 }
 
 void DaliBusComponent::resetBus() {
@@ -1603,14 +1659,18 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
         }
     }
 
+    bool valid = false;
     {
-        // This is timing critical
+        // This is timing critical.
         InterruptLock lock;
+        valid = readBackwardFrame_(data);
+    }
 
-        delayMicroseconds(BIT_PERIOD); // Wait for first data bit
-        delayMicroseconds(QUARTER_BIT_PERIOD); // Wait a quater bit period to sample middle of first half bit
-        data = readByte();
-        delayMicroseconds(BIT_PERIOD*2); // Wait for STOP bits
+    if (!valid) {
+        if (DEBUG_LOG_RXTX) {
+            DALI_LOGD("RX: 00 (NACK, malformed backward frame)");
+        }
+        return 0;
     }
 
     if (DEBUG_LOG_RXTX) {

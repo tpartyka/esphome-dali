@@ -21,16 +21,25 @@ CONF_SUPPORTS_COLOR_TEMPERATURE = "supports_color_temperature"
 DaliApiLight = dali_api_client_ns.class_("DaliApiLight", light.LightOutput)
 
 
-CONFIG_SCHEMA = light.BRIGHTNESS_ONLY_LIGHT_SCHEMA.extend(
-    {
-        cv.GenerateID(CONF_OUTPUT_ID): cv.declare_id(DaliApiLight),
-        cv.GenerateID(CONF_DALI_API_CLIENT_ID): cv.use_id(DaliApiClient),
-        cv.Required(CONF_ADDRESS): cv.int_range(min=0, max=63),
-        cv.Optional(CONF_TARGET, default="lamp"): cv.one_of("lamp", "group", lower=True),
-        cv.Optional(CONF_SUPPORTS_COLOR_TEMPERATURE, default=False): cv.boolean,
-        cv.Optional(CONF_COLD_WHITE_COLOR_TEMPERATURE, default="6500K"): cv.color_temperature,
-        cv.Optional(CONF_WARM_WHITE_COLOR_TEMPERATURE, default="2700K"): cv.color_temperature,
-    }
+def validate_target_address(config):
+    if config[CONF_TARGET] == "group" and config[CONF_ADDRESS] > 15:
+        raise cv.Invalid("group target address must be in the range 0..15")
+    return config
+
+
+CONFIG_SCHEMA = cv.All(
+    light.BRIGHTNESS_ONLY_LIGHT_SCHEMA.extend(
+        {
+            cv.GenerateID(CONF_OUTPUT_ID): cv.declare_id(DaliApiLight),
+            cv.GenerateID(CONF_DALI_API_CLIENT_ID): cv.use_id(DaliApiClient),
+            cv.Required(CONF_ADDRESS): cv.int_range(min=0, max=63),
+            cv.Optional(CONF_TARGET, default="lamp"): cv.one_of("lamp", "group", lower=True),
+            cv.Optional(CONF_SUPPORTS_COLOR_TEMPERATURE, default=False): cv.boolean,
+            cv.Optional(CONF_COLD_WHITE_COLOR_TEMPERATURE, default="6500K"): cv.color_temperature,
+            cv.Optional(CONF_WARM_WHITE_COLOR_TEMPERATURE, default="2700K"): cv.color_temperature,
+        }
+    ),
+    validate_target_address,
 )
 
 

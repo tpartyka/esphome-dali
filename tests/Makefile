@@ -30,6 +30,9 @@ SOURCES := test_main.cpp \
            test_debounce.cpp \
            test_availability.cpp \
            test_bus_health.cpp \
+           test_backward_frame.cpp \
+           test_scene_metadata.cpp \
+           test_input_frame.cpp \
            test_inventory.cpp \
            test_names.cpp \
            test_event_log.cpp \
