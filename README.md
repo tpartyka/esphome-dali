@@ -61,7 +61,7 @@ dali:
 | --- | --- | --- | --- |
 | `id` | ID | auto-generated | Optional, but recommended if you reference this bus from `light:`/`output:` platform entries or multiple buses are defined. |
 | `tx_pin` | pin (output) | **required** | GPIO driving the DALI bus TX line. |
-| `rx_pin` | pin (input) | **required** | GPIO reading the DALI bus RX line. Must be an interrupt-capable GPIO — required for the input-device listener (`input_devices`/`on_input_frame`), even if you don't enable it. |
+| `rx_pin` | pin (input) | **required** | GPIO reading the DALI bus RX line. The component expects the conventional polarity: HIGH while the bus is idle and LOW while it is asserted. Must be an interrupt-capable GPIO — required for the input-device listener (`input_devices`/`on_input_frame`), even if you don't enable it. For an interface with the opposite polarity, use `inverted: true`. |
 | `discovery` | bool | `false` | Scan the bus and create a `light` entity for each detected DALI device (and group/scene entities, if enabled). Requires the `light` component. |
 | `initialize_addresses` | `none` \| `unassigned` \| `all` | `none` | Auto-assign short addresses. `unassigned` only assigns devices with no address yet; `all` re-initializes every device (disruptive — only use once when (re)commissioning a bus). `true`/`false` are accepted as legacy aliases for `unassigned`/`none`. |
 | `max_lights` | int, 1-64 | `64` | Reserved entity slots for lamps `discovery` may create. ESPHome sizes the light `StaticVector` at codegen time from this value — if discovery finds more lamps than this, the extras are silently dropped. Lower it only if you know your bus has fewer than 64 possible short addresses and want to save RAM. |
@@ -72,7 +72,7 @@ dali:
 | `system_failure_level` | `last` \| `off` \| `0`-`254` | `last` | Level a lamp goes to if it loses DALI bus communication (DALI `SYSTEM FAILURE LEVEL`). |
 | `expose_problem` | bool | `true` | Create a diagnostic "Status" `binary_sensor` per discovered lamp: ON when the lamp is unavailable or reports the DALI `STATUS` lamp-failure bit, OFF when OK. |
 | `expose_bus_status` | bool | `true` | Create a single "DALI Bus Online" connectivity `binary_sensor` reflecting whether the bus itself is responding. |
-| `expose_bus_diagnostics` | bool | `true` | Create software-only line/PSU diagnostic entities: "DALI Bus Errors" and "DALI Bus Down Events" lifetime counters, a "DALI Bus Disconnected" `binary_sensor` (RX stuck high = no PSU/physically disconnected bus), and (when `input_devices` is enabled) a "DALI Collisions" counter from the multi-master collision detector. |
+| `expose_bus_diagnostics` | bool | `true` | Create software-only line/PSU diagnostic entities: "DALI Bus Errors" and "DALI Bus Down Events" lifetime counters, a "DALI Bus Disconnected" `binary_sensor` (RX stuck low = no PSU/physically disconnected bus), and (when `input_devices` is enabled) a "DALI Collisions" counter from the multi-master collision detector. |
 | `persist_inventory` | bool | `true` | Persist the discovered short-address inventory to flash, so lamp entities exist at boot (as "unavailable" if missing) even before the bus has been re-polled. Only used when `discovery` is enabled. |
 | `expose_groups` | bool | `true` | Auto-discover DALI group membership and expose one optimistic "DALI Group N" light per active group. Only used when `discovery` is enabled. |
 | `max_groups` | int, 1-16 | `16` | Maximum number of group lights (`0`..`max_groups - 1`) `expose_groups` may create. Reserves the matching number of entity slots. |
@@ -153,7 +153,7 @@ bus polling/discovery.
   - "DALI Bus Errors": lifetime counter of polled lamps that didn't respond.
   - "DALI Bus Down Events": lifetime counter of bus online→offline
     transitions.
-  - "DALI Bus Disconnected": ON when the RX line reads stuck high at the
+  - "DALI Bus Disconnected": ON when the RX line reads stuck low at the
     start of a reply window — distinguishes a physically disconnected/
     unpowered bus from devices that are present but not answering.
   - "DALI Collisions" (only with `input_devices: true`): lifetime counter of

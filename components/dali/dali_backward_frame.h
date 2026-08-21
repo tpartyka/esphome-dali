@@ -9,7 +9,7 @@ namespace dali_rx {
 /// The caller provides a start symbol, eight Manchester-encoded data bits, and
 /// one idle stop bit: [start-hi, start-lo, data0-hi, data0-lo, ..., stop-lo,
 /// stop-lo]. Logical HIGH means the DALI line is asserted; the GPIO transport
-/// must apply its configured inversion before collecting the samples.
+/// must normalize its GPIO samples so HIGH means the DALI line is asserted.
 inline bool decode_backward_frame_halves(const bool (&halves)[20], uint8_t &value) {
     // A backward frame starts with the mandatory logical-1 start symbol.
     if (!halves[0] || halves[1]) return false;

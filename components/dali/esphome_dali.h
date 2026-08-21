@@ -132,7 +132,7 @@ public:
 
     /// @brief Whether to create software-only line/PSU diagnostic entities: lifetime
     /// "DALI Bus Errors"/"DALI Bus Down Events" counters, a "DALI Bus Disconnected"
-    /// binary_sensor (RX stuck high = no PSU/physically disconnected), and (when
+    /// binary_sensor (RX stuck low = no PSU/physically disconnected), and (when
     /// `input_devices` is enabled) a "DALI Collisions" counter from the multi-master
     /// collision detector.
     void set_expose_bus_diagnostics(bool v) { m_expose_bus_diagnostics = v; }
@@ -423,7 +423,7 @@ private:
     /// online -> offline).
     void note_bus_down_();
     /// @brief Publish the "DALI Bus Disconnected" binary_sensor if `disconnected`
-    /// differs from the last published value (RX stuck high at the start of
+    /// differs from the last published value (RX stuck low at the start of
     /// receiveBackwardFrame's wait = no PSU/physically disconnected bus).
     void note_disconnected_(bool disconnected);
     /// @brief Increment + publish the "DALI Collisions" counter (another master drove

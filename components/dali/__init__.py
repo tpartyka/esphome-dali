@@ -163,7 +163,7 @@ CONFIG_SCHEMA = cv.Schema({
     # Create a single "DALI Bus Online" connectivity sensor (bus-down detection).
     cv.Optional(CONF_EXPOSE_BUS_STATUS, default=True): cv.boolean,
     # Create software-only line diagnostics: "DALI Bus Errors" and "DALI Bus Down
-    # Events" counters, a "DALI Bus Disconnected" binary_sensor (RX stuck high, i.e.
+    # Events" counters, a "DALI Bus Disconnected" binary_sensor (RX stuck low, i.e.
     # physically disconnected/no PSU, vs. devices present but not answering), and
     # (when input_devices is enabled) a "DALI Collisions" counter from the
     # multi-master collision detector.

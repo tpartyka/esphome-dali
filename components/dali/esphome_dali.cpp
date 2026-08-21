@@ -1512,10 +1512,9 @@ void DaliBusComponent::dump_config() {
 
 bool DaliBusComponent::check_collision_(bool bit, int half) {
     if (!m_input_devices) return false;
-    // rx_pin is configured `inverted: true`, matching the TX convention where
-    // HIGH = assert (drive bus to 0V): digital_read() == HIGH means the bus
-    // reads as asserted.
-    bool rx_asserted = (m_rxPin->digital_read() == HIGH);
+    // A conventional DALI receiver is HIGH while the bus is released/idle and
+    // LOW while it is asserted (pulled to 0V).
+    bool rx_asserted = (m_rxPin->digital_read() == LOW);
     if (!dali_tx::is_collision(bit, half, rx_asserted)) return false;
 
     m_tx_collision_ = true;
@@ -1560,19 +1559,19 @@ bool DaliBusComponent::readBackwardFrame_(uint8_t &data) {
     halves[0] = true;
 
     delayMicroseconds(HALF_BIT_PERIOD + QUARTER_BIT_PERIOD);
-    halves[1] = m_rxPin->digital_read() == HIGH;
+    halves[1] = m_rxPin->digital_read() == LOW;
 
     for (int bit = 0; bit < 8; bit++) {
         delayMicroseconds(HALF_BIT_PERIOD);
-        halves[2 + bit * 2] = m_rxPin->digital_read() == HIGH;
+        halves[2 + bit * 2] = m_rxPin->digital_read() == LOW;
         delayMicroseconds(HALF_BIT_PERIOD);
-        halves[3 + bit * 2] = m_rxPin->digital_read() == HIGH;
+        halves[3 + bit * 2] = m_rxPin->digital_read() == LOW;
     }
 
     delayMicroseconds(HALF_BIT_PERIOD);
-    halves[18] = m_rxPin->digital_read() == HIGH;
+    halves[18] = m_rxPin->digital_read() == LOW;
     delayMicroseconds(HALF_BIT_PERIOD);
-    halves[19] = m_rxPin->digital_read() == HIGH;
+    halves[19] = m_rxPin->digital_read() == LOW;
 
     return dali_rx::decode_backward_frame_halves(halves, data);
 }
@@ -1634,14 +1633,14 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
     // A real backward frame can't start the instant we begin listening: per
     // IEC 62386-101 a control gear's reply starts at least ~7 Te after the
     // forward frame's stop condition, which is later than this point. If RX is
-    // already HIGH right now, the line is stuck/floating (e.g. DALI bus
+    // already LOW right now, the line is stuck/asserted (e.g. DALI bus
     // disconnected) rather than carrying a genuine start bit -- treat it as a
     // NACK immediately instead of "reading" a phantom 0xFF reply, which would
     // otherwise make isControlGearPresent()/compareSearchAddress() see a bus
     // full of devices and send run_discovery() into a runaway loop.
-    if (m_rxPin->digital_read() == HIGH) {
+    if (m_rxPin->digital_read() == LOW) {
         if (DEBUG_LOG_RXTX) {
-            DALI_LOGD("RX: 00 (NACK, line stuck high)");
+            DALI_LOGD("RX: 00 (NACK, line stuck low)");
         }
         note_disconnected_(true);
         return 0;
@@ -1650,7 +1649,7 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
 
     // Wait for the reply's START bit. Bounded by timeout_ms so a silent/stuck-idle bus
     // returns a NACK instead of spinning forever (see DALI_BACKWARD_TIMEOUT_MS).
-    while (m_rxPin->digital_read() == LOW) {
+    while (m_rxPin->digital_read() == HIGH) {
         if (millis() - startTime >= timeout_ms) {
             if (DEBUG_LOG_RXTX) {
                 DALI_LOGD("RX: 00 (NACK)");
