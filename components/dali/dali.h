@@ -237,6 +237,8 @@ class DaliPort {
 public:
     virtual void sendForwardFrame(uint8_t address, uint8_t data) = 0;
     virtual uint8_t receiveBackwardFrame(unsigned long timeout_ms = DALI_BACKWARD_TIMEOUT_MS);
+    /// @brief Whether the most recent forward frame was aborted by a bus collision.
+    virtual bool lastTransmissionHadCollision() const { return false; }
 
 public:
     virtual void resetBus() { }
@@ -247,9 +249,10 @@ public:
     /// @return Response byte (0xFF: success, 0x00: failure, or other byte)
     uint8_t sendQueryCommand(short_addr_t addr, DaliCommand command) {
         sendForwardFrame(
-            (addr << 1) | DALI_COMMAND, 
+            (addr << 1) | DALI_COMMAND,
             static_cast<uint8_t>(command));
 
+        if (lastTransmissionHadCollision()) return 0;
         return receiveBackwardFrame();
     }
 
@@ -269,6 +272,7 @@ public:
         const uint8_t opcode = static_cast<uint8_t>(command);
 
         sendForwardFrame((addr << 1) | DALI_COMMAND, opcode);
+        if (lastTransmissionHadCollision()) return;
 
         const bool is_configuration_command = (opcode >= 0x20 && opcode <= 0x81);
         if (is_configuration_command) {
@@ -279,11 +283,12 @@ public:
     /// @brief Send a special command to the DALI bus
     /// @param special_command Special command affecting ALL devices on the bus
     /// @param data Parameter byte for the special command
-    /// @return Most special commands do not send a response
-    void sendSpecialCommand(DaliSpecialCommand command, uint8_t data) {
+    /// @return true if the frame was transmitted without a collision.
+    bool sendSpecialCommand(DaliSpecialCommand command, uint8_t data) {
         sendForwardFrame(
-            static_cast<uint8_t>(command), 
+            static_cast<uint8_t>(command),
             static_cast<uint8_t>(data));
+        return !lastTransmissionHadCollision();
     }
 
     /// @brief Send an extended device command to the DALI bus
@@ -294,10 +299,12 @@ public:
         sendSpecialCommand(
             DaliSpecialCommand::ENABLE_DEVICE_TYPE,
             static_cast<uint8_t>(device_type));
+        if (lastTransmissionHadCollision()) return 0;
 
         sendForwardFrame(
-            (addr << 1) | DALI_COMMAND, 
+            (addr << 1) | DALI_COMMAND,
             static_cast<uint8_t>(extended_command));
+        if (lastTransmissionHadCollision()) return 0;
         return receiveBackwardFrame();
     };
 
@@ -316,14 +323,16 @@ public:
         sendSpecialCommand(
             DaliSpecialCommand::ENABLE_DEVICE_TYPE,
             static_cast<uint8_t>(device_type));
+        if (lastTransmissionHadCollision()) return;
 
         // MUST send twice, no response
         sendForwardFrame(
-            (addr << 1) | DALI_COMMAND, 
+            (addr << 1) | DALI_COMMAND,
             static_cast<uint8_t>(extended_command));
+        if (lastTransmissionHadCollision()) return;
 
         sendForwardFrame(
-            (addr << 1) | DALI_COMMAND, 
+            (addr << 1) | DALI_COMMAND,
             static_cast<uint8_t>(extended_command));
     };
 
@@ -363,28 +372,40 @@ DaliBusManager(DaliPort& port)
     /// @brief Put a device into intialisation mode.
     /// @remark Required before you can send other special commands. Expires after 15 minutes, or when you send TERMINATE.
     /// @param addr Which devices to affect
-    void initialize(uint8_t addr) {
+    bool initialize(uint8_t addr) {
         // addr:
         // 0000 0000 : All devices
         // 0AAA AAA1 : Only devices with this address
         // 1111 1111 : Only devices without a short address
-        port.sendSpecialCommand(DaliSpecialCommand::INITIALISE, addr);
-        port.sendSpecialCommand(DaliSpecialCommand::INITIALISE, addr);
+        if (!port.sendSpecialCommand(DaliSpecialCommand::INITIALISE, addr)) return false;
+        return port.sendSpecialCommand(DaliSpecialCommand::INITIALISE, addr);
     }
 
     /// @brief Tell all devices in initialize mode to randomize their addresses.
-    void randomize() {
-        port.sendSpecialCommand(DaliSpecialCommand::RANDOMIZE, 0);
-        port.sendSpecialCommand(DaliSpecialCommand::RANDOMIZE, 0);
+    bool randomize() {
+        if (!port.sendSpecialCommand(DaliSpecialCommand::RANDOMIZE, 0)) return false;
+        return port.sendSpecialCommand(DaliSpecialCommand::RANDOMIZE, 0);
     }
 
     /// @brief Test if the new randomized address is <= the address programmed in SEARCH[H,M,L].
     bool compareSearchAddress(uint32_t search_address) {
-        port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRH, (search_address >> 16) & 0xFF); // Set SEARCHH
-        port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRM, (search_address >> 8) & 0xFF);  // Set SEARCHM
-        port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRL, search_address & 0xFF);         // Set SEARCHL
-
-        port.sendSpecialCommand(DaliSpecialCommand::COMPARE, 0);
+        _scan_collision = false;
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRH, (search_address >> 16) & 0xFF)) {
+            _scan_collision = true;
+            return false;
+        }
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRM, (search_address >> 8) & 0xFF)) {
+            _scan_collision = true;
+            return false;
+        }
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRL, search_address & 0xFF)) {
+            _scan_collision = true;
+            return false;
+        }
+        if (!port.sendSpecialCommand(DaliSpecialCommand::COMPARE, 0)) {
+            _scan_collision = true;
+            return false;
+        }
 
         const unsigned long timeout_ms = 10;
         return (port.receiveBackwardFrame(timeout_ms) == 0xFF);
@@ -393,19 +414,19 @@ DaliBusManager(DaliPort& port)
     /// @brief Exit the initialization mode.
     void terminate() {
         port.sendSpecialCommand(DaliSpecialCommand::TERMINATE, 0);
-        port.sendSpecialCommand(DaliSpecialCommand::TERMINATE, 0);
     }
 
     bool programShortAddress(uint8_t addr) {
         addr = ((addr & 0x3F) << 1) | DALI_COMMAND;
-        port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, addr);
+        if (!port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, addr)) return false;
 
-        port.sendSpecialCommand(DaliSpecialCommand::VERIFY_SHORT_ADDRESS, addr);
+        if (!port.sendSpecialCommand(DaliSpecialCommand::VERIFY_SHORT_ADDRESS, addr)) return false;
         return (port.receiveBackwardFrame() == 0xFF);
     }
 
     void clearShortAddress() {
-        port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, 0x7F);
+        // PROGRAM SHORT ADDRESS uses 0xFF as the MASK/unassigned marker.
+        port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, 0xFF);
     }
 
     /// @brief Automatically assign sequential short addresses to all devices on the DALI bus
@@ -417,7 +438,7 @@ DaliBusManager(DaliPort& port)
 
     void startAddressScan(bool already_initialized = false);
     bool findNextAddress(short_addr_t& short_addr, uint32_t& long_addr);
-    void withdrawCurrentDevice();
+    bool withdrawCurrentDevice();
     void endAddressScan();
 
     bool isControlGearPresent(short_addr_t addr = ADDR_BROADCAST) {
@@ -438,15 +459,16 @@ DaliBusManager(DaliPort& port)
 
 private:
     /// @brief Tell the device matching the address in SEARCH[H,M,L] to ignore COMPARE from now on.
-    void withdraw(uint32_t address) {
-        port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRH, (address >> 16) & 0xFF);
-        port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRM, (address >> 8) & 0xFF);
-        port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRL, address & 0xFF);
-        port.sendSpecialCommand(DaliSpecialCommand::WITHDRAW, 0);
+    bool withdraw(uint32_t address) {
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRH, (address >> 16) & 0xFF)) return false;
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRM, (address >> 8) & 0xFF)) return false;
+        if (!port.sendSpecialCommand(DaliSpecialCommand::SEARCH_ADDRL, address & 0xFF)) return false;
+        return port.sendSpecialCommand(DaliSpecialCommand::WITHDRAW, 0);
     }
 
     DaliPort& port;
     bool _is_scanning = false;
+    bool _scan_collision = false;
     uint32_t _current_addr = 0;
 };
 
@@ -805,13 +827,13 @@ public:
     /// @brief Warm color temperature
     /// @param short_addr Device short address
     void stepWarmer(short_addr_t short_addr = ADDR_BROADCAST) {
-        port.sendExtendedQuery(short_addr, DaliColorCommand::TEMPERATURE_WARMER);
+        port.sendExtendedCommand(short_addr, DaliColorCommand::TEMPERATURE_WARMER);
     }
 
     /// @brief Cool color temperature
     /// @param short_addr Device short address
     void stepCooler(short_addr_t short_addr = ADDR_BROADCAST) {
-        port.sendExtendedQuery(short_addr, DaliColorCommand::TEMPERATURE_COOLER);
+        port.sendExtendedCommand(short_addr, DaliColorCommand::TEMPERATURE_COOLER);
     }
 
     uint16_t queryParameter(short_addr_t short_addr, DaliColorParam query) {

@@ -6,6 +6,15 @@
 
 namespace {
 
+TEST(query_returns_nack_and_skips_rx_after_collision) {
+    MockDaliPort port;
+    DaliBusManager bus(port);
+    port.collision = true;
+
+    CHECK_EQ(port.sendQueryCommand(3, DaliCommand::QUERY_STATUS), 0u);
+    CHECK_EQ(port.receive_count, 0);
+}
+
 TEST(initialize_sends_initialise_twice_with_given_addr) {
     MockDaliPort port;
     DaliBusManager bus(port);
@@ -38,14 +47,13 @@ TEST(randomize_sends_randomize_twice) {
     CHECK_HEX_EQ(port.sent[0].address, static_cast<uint8_t>(DaliSpecialCommand::RANDOMIZE));
 }
 
-TEST(terminate_sends_terminate_twice) {
+TEST(terminate_sends_terminate_once) {
     MockDaliPort port;
     DaliBusManager bus(port);
 
     bus.terminate();
 
-    CHECK_EQ(port.sent.size(), 2u);
-    CHECK(port.sent[0] == port.sent[1]);
+    CHECK_EQ(port.sent.size(), 1u);
     CHECK_HEX_EQ(port.sent[0].address, static_cast<uint8_t>(DaliSpecialCommand::TERMINATE));
 }
 
@@ -65,6 +73,15 @@ TEST(compare_search_address_sends_searchhml_then_compare) {
     CHECK_HEX_EQ(port.sent[2].data, 0x56);
     CHECK_HEX_EQ(port.sent[3].address, static_cast<uint8_t>(DaliSpecialCommand::COMPARE));
     CHECK(result);
+}
+
+TEST(compare_search_address_returns_false_on_collision) {
+    MockDaliPort port;
+    DaliBusManager bus(port);
+    port.collision = true;
+
+    CHECK(!bus.compareSearchAddress(0x123456));
+    CHECK_EQ(port.receive_count, 0);
 }
 
 TEST(compare_search_address_false_on_non_0xff_response) {
@@ -110,7 +127,25 @@ TEST(program_short_address_returns_false_on_verify_failure) {
     CHECK(!bus.programShortAddress(5));
 }
 
-TEST(clear_short_address_programs_0x7f) {
+TEST(program_short_address_returns_false_on_collision_without_rx) {
+    MockDaliPort port;
+    DaliBusManager bus(port);
+    port.collision = true;
+
+    CHECK(!bus.programShortAddress(5));
+    CHECK_EQ(port.receive_count, 0);
+}
+
+TEST(auto_assign_returns_failure_on_initialise_collision) {
+    MockDaliPort port;
+    DaliBusManager bus(port);
+    port.collision = true;
+
+    CHECK_EQ(bus.autoAssignShortAddresses(), 0xFF);
+    CHECK(!port.sent.empty());
+}
+
+TEST(clear_short_address_programs_unassigned_marker) {
     MockDaliPort port;
     DaliBusManager bus(port);
 
@@ -118,7 +153,7 @@ TEST(clear_short_address_programs_0x7f) {
 
     CHECK_EQ(port.sent.size(), 1u);
     CHECK_HEX_EQ(port.sent[0].address, static_cast<uint8_t>(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS));
-    CHECK_HEX_EQ(port.sent[0].data, 0x7F);
+    CHECK_HEX_EQ(port.sent[0].data, 0xFF);
 }
 
 TEST(is_control_gear_present_defaults_to_broadcast) {

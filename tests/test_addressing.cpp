@@ -189,4 +189,21 @@ TEST(find_next_address_without_withdraw_loops_on_same_device) {
     CHECK_HEX_EQ(l2, 0x000010u);
 }
 
+TEST(query_short_address_decodes_encoded_addresses_32_to_63) {
+    // QUERY SHORT ADDRESS returns 0AAAAAA1, so short address 40 is encoded as
+    // 0x51. The result exposed to callers must be the unencoded value 40.
+    VirtualDaliBus bus({0x000040});
+    bus.devices[0].short_addr = 40;
+    DaliBusManager mgr(bus);
+
+    mgr.initialize(ASSIGN_ALL);
+    mgr.startAddressScan(true);
+
+    short_addr_t short_addr = 0xFF;
+    uint32_t long_addr = 0;
+    CHECK(mgr.findNextAddress(short_addr, long_addr));
+    CHECK_HEX_EQ(long_addr, 0x000040u);
+    CHECK_EQ(short_addr, 40u);
+}
+
 }  // namespace

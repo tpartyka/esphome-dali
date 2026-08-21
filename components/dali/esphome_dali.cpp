@@ -2,12 +2,12 @@
 #include <esp_task_wdt.h>
 #include <cmath>
 #include <cstring>
-#ifdef DALI_WEB_DASHBOARD_ENABLED
-#include "esphome/components/network/util.h"
-#endif
 #include "esphome_dali.h"
 #include "esphome_dali_light.h"
 #include "port.h"
+#ifdef DALI_CIRCADIAN_ENABLED
+#include "esphome/components/sun/sun.h"
+#endif
 #ifdef USE_BUTTON
 #include "esphome/components/button/button.h"
 #endif
@@ -25,7 +25,7 @@
 #include "dali_tx_collision.h"
 
 //static const char *const TAG = "dali";
-static const bool DEBUG_LOG_RXTX = true; // NOTE: Will probably trigger WDT
+static const bool DEBUG_LOG_RXTX = false;
 
 using namespace esphome;
 using namespace dali;
@@ -240,6 +240,31 @@ protected:
 };
 #endif  // USE_NUMBER
 
+#ifdef USE_SWITCH
+// Auto-created (no YAML) "DALI Group N Circadian" switch, one per
+// circadian_groups YAML entry, toggling circadian color-temperature control
+// for that group. State is persisted to flash (see restore_circadian_).
+class DaliCircadianSwitch : public esphome::switch_::Switch, public esphome::Component {
+public:
+    DaliCircadianSwitch(DaliBusComponent* parent, uint8_t group) : parent_(parent), group_(group) {}
+
+    void configure_dynamic_entity(const char* name, const char* object_id) {
+        uint32_t entity_fields =
+            (static_cast<uint32_t>(esphome::ENTITY_CATEGORY_CONFIG) << esphome::ENTITY_FIELD_ENTITY_CATEGORY_SHIFT);
+        this->configure_entity_(name, esphome::fnv1_hash_object_id(object_id, std::strlen(object_id)), entity_fields);
+    }
+
+protected:
+    void write_state(bool state) override {
+        this->parent_->set_circadian_enabled(this->group_, state);
+        this->publish_state(state);
+    }
+
+    DaliBusComponent* parent_;
+    uint8_t group_;
+};
+#endif  // USE_SWITCH
+
 #ifdef USE_BINARY_SENSOR
 // Auto-created (no YAML) diagnostic binary_sensor per lamp ("online", "problem").
 // The bus publishes to it from the state poller. The optional device-class index
@@ -302,6 +327,11 @@ void DaliBusComponent::setup() {
     create_bus_sensor();
     create_diag_sensors();
 
+    // Circadian color temperature: restore the per-group enabled mask before
+    // creating the switches, so their initial published state is correct.
+    restore_circadian_();
+    create_circadian_switches_();
+
     // Passive input-device listener (Part 103 push buttons / sensors).
     if (m_input_devices) {
         m_input_listener.input_listener_setup(m_rxPin);
@@ -326,14 +356,16 @@ void DaliBusComponent::setup() {
         this->enable_loop();
     }
 
-    // Allocate the web dashboard, but defer AsyncWebServer::begin() to loop() --
-    // calling it this early (before the network stack is up) aborts inside
-    // httpd_start(). Force loop() on regardless of the decisions above, so the
-    // dashboard gets started and queued actions get drained even if discovery
-    // found nothing to poll.
+    // Allocate the web dashboard and register it on the shared web_server_base
+    // immediately -- safe even this early, since add_handler() just queues the
+    // handler until web_server:'s own setup() (a later setup_priority) actually
+    // opens the socket. Force loop() on regardless of the decisions above, so
+    // queued dashboard actions get drained even if discovery found nothing to poll.
     if (m_dashboard_enabled) {
 #ifdef DALI_WEB_DASHBOARD_ENABLED
         m_dashboard_ = new DaliWebDashboard {};
+        m_dashboard_->begin(m_web_server_base_, this);
+        DALI_LOGI("DALI web dashboard registered on port %u", (unsigned) m_dashboard_port);
         this->enable_loop();
 #else
         DALI_LOGE("expose_dashboard is set but the web dashboard is only supported on ESP32");
@@ -401,15 +433,27 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
     if (mode != DaliInitMode::DiscoverOnly) {
         if (mode == DaliInitMode::InitializeAll) {
             DALI_LOGI("Randomizing addresses for *all* DALI devices");
-            dali.bus_manager.initialize(ASSIGN_ALL);
+            if (!dali.bus_manager.initialize(ASSIGN_ALL)) {
+                DALI_LOGE("Could not initialize DALI devices due to bus collision");
+                dali.bus_manager.terminate();
+                return;
+            }
         }
         else if (mode == DaliInitMode::InitializeUnassigned) {
             // Only randomize devices without an assigned short address
             DALI_LOGI("Randomizing addresses for unassigned DALI devices");
-            dali.bus_manager.initialize(ASSIGN_UNINITIALIZED);
+            if (!dali.bus_manager.initialize(ASSIGN_UNINITIALIZED)) {
+                DALI_LOGE("Could not initialize unassigned DALI devices due to bus collision");
+                dali.bus_manager.terminate();
+                return;
+            }
         }
 
-        dali.bus_manager.randomize();
+        if (!dali.bus_manager.randomize()) {
+            DALI_LOGE("Could not randomize DALI addresses due to bus collision");
+            dali.bus_manager.terminate();
+            return;
+        }
 
         // DALI spec requires minimum 100ms after RANDOMIZE for devices to generate random address.
         // Use 500ms to be safe with slower devices.
@@ -450,7 +494,11 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
                     short_addr_t free_addr = lowest_free_address_(addr_used);
                     if (free_addr == 0xFF) {
                         DALI_LOGE("  No free short address available (bus full)");
-                        dali.bus_manager.withdrawCurrentDevice();
+                        if (!dali.bus_manager.withdrawCurrentDevice()) {
+                            DALI_LOGE("  Could not withdraw device after bus collision");
+                            dali.bus_manager.endAddressScan();
+                            return;
+                        }
                         short_addr = 0xFF;
                         continue;
                     }
@@ -459,10 +507,9 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
                     DALI_LOGD("  Duplicate short address detected, reassigning to: %.2x", short_addr);
 
                     if (!dali.bus_manager.programShortAddress(short_addr)) {
-                        DALI_LOGE("  Could not program short address");
-                        dali.bus_manager.withdrawCurrentDevice();
-                        short_addr = 0xFF;
-                        continue;
+                        DALI_LOGE("  Could not program short address; aborting discovery");
+                        dali.bus_manager.endAddressScan();
+                        return;
                     }
                 }
             }
@@ -471,7 +518,11 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
             }
 
             // Withdraw after address is confirmed (spec order: find → program → withdraw)
-            dali.bus_manager.withdrawCurrentDevice();
+            if (!dali.bus_manager.withdrawCurrentDevice()) {
+                            DALI_LOGE("  Could not withdraw device after bus collision");
+                            dali.bus_manager.endAddressScan();
+                            return;
+                        }
 
             // Dynamic component creation (if not defined in YAML)
             if (m_addresses[short_addr]) {
@@ -486,7 +537,11 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
             if (mode == DaliInitMode::DiscoverOnly) {
                 DALI_LOGI("  Device %.6x @ --", long_addr);
                 DALI_LOGW("  No short address assigned!");
-                dali.bus_manager.withdrawCurrentDevice();
+                if (!dali.bus_manager.withdrawCurrentDevice()) {
+                            DALI_LOGE("  Could not withdraw device after bus collision");
+                            dali.bus_manager.endAddressScan();
+                            return;
+                        }
                 continue;
             }
             else {
@@ -495,7 +550,11 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
                 short_addr_t free_addr = lowest_free_address_(addr_used);
                 if (free_addr == 0xFF) {
                     DALI_LOGE("  No free short address available (bus full)");
-                    dali.bus_manager.withdrawCurrentDevice();
+                    if (!dali.bus_manager.withdrawCurrentDevice()) {
+                            DALI_LOGE("  Could not withdraw device after bus collision");
+                            dali.bus_manager.endAddressScan();
+                            return;
+                        }
                     short_addr = 0xFF;
                     continue;
                 }
@@ -504,15 +563,18 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
                 DALI_LOGI("  Assigning short address: %.2x", short_addr);
 
                 if (!dali.bus_manager.programShortAddress(short_addr)) {
-                    DALI_LOGE("  Could not program short address");
-                    dali.bus_manager.withdrawCurrentDevice();
-                    short_addr = 0xFF;
-                    continue;
+                    DALI_LOGE("  Could not program short address; aborting discovery");
+                    dali.bus_manager.endAddressScan();
+                    return;
                 }
 
                 // Withdraw after successful address programming
                 // (spec order: find → program → withdraw)
-                dali.bus_manager.withdrawCurrentDevice();
+                if (!dali.bus_manager.withdrawCurrentDevice()) {
+                            DALI_LOGE("  Could not withdraw device after bus collision");
+                            dali.bus_manager.endAddressScan();
+                            return;
+                        }
 
                 DALI_LOGI("  Device %.6x @ %.2x", long_addr, short_addr);
 
@@ -627,6 +689,24 @@ void DaliBusComponent::restore_names_() {
 void DaliBusComponent::save_names_() {
     if (m_names_pref_.save(&m_names_)) {
         DALI_LOGD("Saved DALI custom names");
+    }
+}
+
+void DaliBusComponent::restore_circadian_() {
+    m_circadian_pref_ = global_preferences->make_preference<dali_circadian::DaliCircadianBlob>(0xDA111103u);
+    dali_circadian::DaliCircadianBlob loaded{};
+    if (!m_circadian_pref_.load(&loaded)) {
+        DALI_LOGD("No saved DALI circadian settings to restore");
+        return;
+    }
+    m_circadian_enabled_mask_ = loaded.enabled_mask;
+    DALI_LOGI("Restored DALI circadian settings from flash");
+}
+
+void DaliBusComponent::save_circadian_() {
+    dali_circadian::DaliCircadianBlob blob{ m_circadian_enabled_mask_ };
+    if (m_circadian_pref_.save(&blob)) {
+        DALI_LOGD("Saved DALI circadian settings");
     }
 }
 
@@ -775,7 +855,7 @@ void DaliBusComponent::create_group_lights_(uint64_t present_mask) {
     }
 
     uint8_t created = 0;
-    for (uint8_t g = 0; g < 16; g++) {
+    for (uint8_t g = 0; g < m_max_groups; g++) {
         if (!(active_groups & (1u << g))) continue;
         if (m_group_created_[g]) continue;  // already have a light for this group
         m_group_created_[g] = true;
@@ -907,20 +987,114 @@ void DaliBusComponent::create_group_controls() {
 #endif
 }
 
+void DaliBusComponent::create_circadian_switches_() {
+#ifdef USE_SWITCH
+    const int MAX_STR_LEN = 32;
+    for (uint8_t g = 0; g < 16; g++) {
+        if (!m_circadian_groups_[g].configured) continue;
+
+        // Heap-allocated (not stack): configure_entity_() stores this pointer as-is
+        // (no internal copy), so it must outlive this function -- matches the
+        // pattern in create_group_light_component()/create_scene_controls().
+        char* name = new char[MAX_STR_LEN];
+        char* id = new char[MAX_STR_LEN];
+        auto* sw = new DaliCircadianSwitch { this, g };
+        snprintf(name, MAX_STR_LEN, "DALI Group %u Circadian", (unsigned) g);
+        snprintf(id, MAX_STR_LEN, "dali_group_%u_circadian", (unsigned) g);
+        sw->configure_dynamic_entity(name, id);
+        App.register_switch(sw);
+        static_cast<AppRegistrationAccessor&>(App).register_component_(sw);
+        sw->publish_state(circadian_enabled(g));
+        m_circadian_switches_[g] = sw;
+    }
+    DALI_LOGI("Created DALI circadian switches");
+#endif
+}
+
+void DaliBusComponent::update_circadian_() {
+#ifdef DALI_CIRCADIAN_ENABLED
+    if (m_sun_ == nullptr) return;
+
+    uint32_t now = millis();
+    if (now - m_last_circadian_update_ms_ < DALI_CIRCADIAN_UPDATE_MS) return;
+    m_last_circadian_update_ms_ = now;
+
+    double elevation = m_sun_->elevation();
+    if (std::isnan(elevation)) return;  // time not synced yet
+
+    for (uint8_t g = 0; g < 16; g++) {
+        if (!m_circadian_groups_[g].configured || !circadian_enabled(g)) continue;
+
+        DaliLight* gl = m_group_lights_[g];
+        if (gl == nullptr || !gl->remote_values().is_on()) {
+            // Reset the sentinel so the next turn-on re-applies promptly.
+            m_circadian_last_applied_mireds_[g].reset();
+            continue;
+        }
+        if (!gl->supports_color_temp()) continue;
+
+        uint16_t mireds = dali_circadian::compute_color_temp_mireds(
+            (float) elevation, m_circadian_day_elevation_, m_circadian_night_elevation_,
+            m_circadian_groups_[g].day_mireds, m_circadian_groups_[g].night_mireds);
+        if (mireds < gl->min_mireds()) mireds = gl->min_mireds();
+        if (mireds > gl->max_mireds()) mireds = gl->max_mireds();
+
+        if (m_circadian_last_applied_mireds_[g].has_value() && m_circadian_last_applied_mireds_[g].value() == mireds)
+            continue;
+
+        ControlRequest req;
+        req.has_color_temp = true;
+        req.color_temp_mireds = mireds;
+        req.from_circadian = true;
+        gl->perform_call(req);
+        m_circadian_last_applied_mireds_[g] = mireds;
+    }
+#endif  // DALI_CIRCADIAN_ENABLED
+}
+
 void DaliBusComponent::add_to_group(uint8_t addr, uint8_t group) {
+    if (group >= 16) return;
     dali.scene.addToGroup(addr, group);
     if (addr <= ADDR_SHORT_MAX) m_group_membership_[addr] |= (uint16_t) (1u << group);
 
-    // Make the group immediately controllable if this is its first member.
-    if (m_expose_groups && !m_group_created_[group]) {
+    // Make the group immediately controllable if this is its first member, but
+    // never create a dynamic entity outside the configured capacity.
+    if (m_expose_groups && group < m_max_groups && !m_group_created_[group]) {
         m_group_created_[group] = true;
         create_group_light_component(group);
     }
 }
 
 void DaliBusComponent::remove_from_group(uint8_t addr, uint8_t group) {
+    if (group >= 16) return;
     dali.scene.removeFromGroup(addr, group);
     if (addr <= ADDR_SHORT_MAX) m_group_membership_[addr] &= (uint16_t) ~(1u << group);
+}
+
+void DaliBusComponent::add_circadian_group(uint8_t group, uint16_t day_mireds, uint16_t night_mireds) {
+    if (group >= 16) return;
+    m_circadian_groups_[group] = { true, day_mireds, night_mireds };
+}
+
+bool DaliBusComponent::circadian_enabled(uint8_t group) const {
+    return dali_circadian::circadian_enabled(m_circadian_enabled_mask_, group);
+}
+
+void DaliBusComponent::set_circadian_enabled(uint8_t group, bool enabled) {
+    if (group >= 16) return;
+    m_circadian_enabled_mask_ = dali_circadian::circadian_set(m_circadian_enabled_mask_, group, enabled);
+    save_circadian_();
+    // Force a prompt re-apply on the next update_circadian_() tick.
+    m_circadian_last_applied_mireds_[group].reset();
+}
+
+void DaliBusComponent::disable_circadian_for_manual_override(uint8_t group) {
+    if (group >= 16 || !circadian_enabled(group)) return;
+    set_circadian_enabled(group, false);
+#ifdef USE_SWITCH
+    if (m_circadian_switches_[group] != nullptr) m_circadian_switches_[group]->publish_state(false);
+#endif
+    DALI_LOGI("DALI Group %u circadian disabled (manual color-temp override)", (unsigned) group);
 }
 
 void DaliBusComponent::sync_group_member_states(uint8_t group, const GroupStateUpdate& update) {
@@ -1215,15 +1389,7 @@ void DaliBusComponent::loop() {
     process_identify_();
 #ifdef DALI_WEB_DASHBOARD_ENABLED
     if (m_dashboard_ != nullptr) {
-        if (!m_dashboard_started_) {
-            if (network::is_connected()) {
-                m_dashboard_->begin(m_dashboard_port, this);
-                m_dashboard_started_ = true;
-                DALI_LOGI("DALI web dashboard listening on port %u", (unsigned) m_dashboard_port);
-            }
-        } else {
-            m_dashboard_->process_pending_actions();
-        }
+        m_dashboard_->process_pending_actions();
     }
 #endif
     if (m_input_devices) {
@@ -1270,6 +1436,8 @@ void DaliBusComponent::loop() {
             m_poll_index++;
         }
     }
+
+    update_circadian_();
 }
 
 void DaliBusComponent::dump_config() {
@@ -1296,40 +1464,51 @@ void DaliBusComponent::dump_config() {
 #define QUARTER_BIT_PERIOD 208
 #define HALF_BIT_PERIOD 416
 #define BIT_PERIOD 833
+#define INTER_FRAME_MIN_PERIOD (HALF_BIT_PERIOD * 22)
 
 // Collision sampling splits each half-bit's delay around a single digital_read(),
 // so the total delay (and thus the Manchester bit period) is unchanged.
 #define HALF_BIT_PERIOD_PRE  (HALF_BIT_PERIOD - 6) / 2
 #define HALF_BIT_PERIOD_POST (HALF_BIT_PERIOD - 6) - HALF_BIT_PERIOD_PRE
 
-void DaliBusComponent::check_collision_(bool bit, int half) {
-    if (!m_input_devices) return;
+bool DaliBusComponent::check_collision_(bool bit, int half) {
+    if (!m_input_devices) return false;
     // rx_pin is configured `inverted: true`, matching the TX convention where
     // HIGH = assert (drive bus to 0V): digital_read() == HIGH means the bus
     // reads as asserted.
     bool rx_asserted = (m_rxPin->digital_read() == HIGH);
-    if (dali_tx::is_collision(bit, half, rx_asserted)) {
-        note_collision_();
-    }
+    if (!dali_tx::is_collision(bit, half, rx_asserted)) return false;
+
+    m_tx_collision_ = true;
+    note_collision_();
+    return true;
 }
 
-void DaliBusComponent::writeBit(bool bit) {
+bool DaliBusComponent::writeBit(bool bit) {
     // Output is inverted: HIGH pulls the bus to 0V.
     m_txPin->digital_write(bit ? HIGH : LOW);
     delayMicroseconds(HALF_BIT_PERIOD_PRE);
-    check_collision_(bit, 0);
+    if (check_collision_(bit, 0)) {
+        m_txPin->digital_write(LOW);
+        return false;
+    }
     delayMicroseconds(HALF_BIT_PERIOD_POST);
     m_txPin->digital_write(bit ? LOW : HIGH);
     delayMicroseconds(HALF_BIT_PERIOD_PRE);
-    check_collision_(bit, 1);
+    if (check_collision_(bit, 1)) {
+        m_txPin->digital_write(LOW);
+        return false;
+    }
     delayMicroseconds(HALF_BIT_PERIOD_POST);
+    return true;
 }
 
-void DaliBusComponent::writeByte(uint8_t b) {
+bool DaliBusComponent::writeByte(uint8_t b) {
     for (int i = 0; i < 8; i++) {
-        writeBit(b & 0x80);
+        if (!writeBit(b & 0x80)) return false;
         b <<= 1;
     }
+    return true;
 }
 
 uint8_t DaliBusComponent::readByte() {
@@ -1350,8 +1529,17 @@ void DaliBusComponent::resetBus() {
 }
 
 void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
+    // Enforce spacing before every new forward frame. Query callers enter
+    // receiveBackwardFrame() immediately after the previous frame; this guard
+    // is only consumed when a subsequent forward frame is actually sent.
+    if (m_inter_frame_pending_) {
+        delayMicroseconds(INTER_FRAME_MIN_PERIOD);
+        m_inter_frame_pending_ = false;
+    }
+
     // Don't let the input listener decode our own transmission (un-suppressed on exit).
     ListenerSuppressGuard suppress(&m_input_listener, m_input_devices);
+    m_tx_collision_ = false;
 
     if (DEBUG_LOG_RXTX) {
         DALI_LOGD("TX: %02x %02x", address, data);
@@ -1363,16 +1551,19 @@ void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
         // This is timing critical
         InterruptLock lock;
 
-        writeBit(1); // START bit
-        writeByte(address);
-        writeByte(data);
+        bool complete = writeBit(1); // START bit
+        if (complete) complete = writeByte(address);
+        if (complete) complete = writeByte(data);
         // Always leave the bus driven to idle (no half-finished frame on the wire).
         m_txPin->digital_write(LOW);
+        if (!complete) {
+            DALI_LOGW("TX aborted after DALI bus collision");
+        }
     }
 
-    // Non critical delay
-    delayMicroseconds(HALF_BIT_PERIOD*2);
-    delayMicroseconds(BIT_PERIOD*4); // Optional, for clarity in scope trace
+    // A forward frame has completed (or was aborted); a later forward frame
+    // must observe the minimum inter-frame guard.
+    m_inter_frame_pending_ = true;
 }
 
 uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
@@ -1426,7 +1617,5 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
         DALI_LOGD("RX: %02x", data);
     }
 
-    // Minimum time before we can send another forward frame
-    delayMicroseconds(BIT_PERIOD*8);
     return data;
 }

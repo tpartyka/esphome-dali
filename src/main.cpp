@@ -24,6 +24,7 @@ private:
     void writeBit(bool bit);
     void writeByte(uint8_t b);
     uint8_t readByte();
+    bool m_inter_frame_pending = false;
 
     int m_txPin;
     int m_rxPin;

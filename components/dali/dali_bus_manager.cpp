@@ -10,12 +10,20 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
     }
 
     // Put matching devices into initialization mode
-    initialize(assign);
+    if (!initialize(assign)) {
+        DALI_LOGE("Could not enter initialization mode due to bus collision");
+        terminate();
+        return 0xFF;
+    }
 
     // If requested, randomize addresses before scanning
     if (reset) {
         DALI_LOGI("Randomizing addresses");
-        randomize();
+        if (!randomize()) {
+            DALI_LOGE("Could not randomize addresses due to bus collision");
+            terminate();
+            return 0xFF;
+        }
         delayMilliseconds(1000);
     }
 
@@ -34,7 +42,11 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
 
         if (reset) {
             // Program sequential short address (LSB is command bit, so keep it clear here)
-            port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, program_short | DALI_COMMAND);
+            if (!port.sendSpecialCommand(DaliSpecialCommand::PROGRAM_SHORT_ADDRESS, program_short | DALI_COMMAND)) {
+                this->_is_scanning = false;
+                terminate();
+                return 0xFF;
+            }
             verify_short = program_short;
         } else {
             // Use any reported short address from device if available
@@ -48,7 +60,11 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
 
         // Verify short address if we have one to verify
         if (verify_short != 0xFF) {
-            port.sendSpecialCommand(DaliSpecialCommand::VERIFY_SHORT_ADDRESS, verify_short | DALI_COMMAND);
+            if (!port.sendSpecialCommand(DaliSpecialCommand::VERIFY_SHORT_ADDRESS, verify_short | DALI_COMMAND)) {
+                this->_is_scanning = false;
+                terminate();
+                return 0xFF;
+            }
             if (port.receiveBackwardFrame() == 0xFF) {
                 DALI_LOGD("Short address verified: %.2x", verify_short);
             } else {
@@ -61,7 +77,12 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
 
         // Withdraw the device from the bus so it won't be found again in the next iteration.
         // Per DALI spec: binary search → PROGRAM_SHORT_ADDRESS → WITHDRAW
-        withdrawCurrentDevice();
+        if (!withdrawCurrentDevice()) {
+            DALI_LOGE("  Could not withdraw device 0x%.6x after programming", found_long);
+            this->_is_scanning = false;
+            terminate();
+            return 0xFF;
+        }
         delayMilliseconds(10);
 
         count++;
@@ -80,11 +101,11 @@ uint8_t DaliBusManager::autoAssignShortAddresses(uint8_t assign, bool reset) {
 
 void DaliBusManager::startAddressScan(bool already_initialized) {
     if (!this->_is_scanning) {
-        this->_is_scanning = true;
         if (!already_initialized) {
             // Put all devices on the bus into initialization mode
-            initialize(ASSIGN_ALL);
+            if (!initialize(ASSIGN_ALL)) return;
         }
+        this->_is_scanning = true;
         // If already_initialized=true, caller already sent INITIALIZE with correct mode
         // (e.g. ASSIGN_UNINITIALIZED). Re-sending initialize(ASSIGN_ALL) would override it.
     }
@@ -100,6 +121,7 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
 
     // Shortcut: test if we are done
     if (!compareSearchAddress(0xFFFFFF)) {
+        if (_scan_collision) _is_scanning = false;
         return false;
     }
 
@@ -110,6 +132,10 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
 
         // True if actual address <= search_address
         bool compare_result = compareSearchAddress(addr);
+        if (_scan_collision) {
+            _is_scanning = false;
+            return false;
+        }
         //DALI_LOGD("Test addr %.6x %.2x", addr, compare_result);
         if (compare_result) {
             addr &= ~bit; // Clear the bit
@@ -120,6 +146,10 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
 
     // Final step in the search, set last bit if no longer matching
     if (!compareSearchAddress(addr)) {
+        if (_scan_collision) {
+            _is_scanning = false;
+            return false;
+        }
         addr++;
     }
 
@@ -135,6 +165,7 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
 
     // Sanity check: Address should still return true for comparison
     if (!compareSearchAddress(addr)) {
+        if (_scan_collision) _is_scanning = false;
         DALI_LOGE("ERROR: Address did not match?");
         return false;
     }
@@ -145,14 +176,27 @@ bool DaliBusManager::findNextAddress(short_addr_t& out_short_addr, uint32_t& out
     out_long_addr = addr;
 
     // Get short address
-    port.sendSpecialCommand(DaliSpecialCommand::QUERY_SHORT_ADDRESS, 0);
+    if (!port.sendSpecialCommand(DaliSpecialCommand::QUERY_SHORT_ADDRESS, 0)) {
+        out_short_addr = 0xFF;
+        _is_scanning = false;
+        terminate();
+        return false;
+    }
     out_short_addr = port.receiveBackwardFrame();
-    if (out_short_addr == 0) {
+    // QUERY SHORT ADDRESS returns the encoded form 0AAAAAA1, not the raw
+    // 0..63 value. Validate the command bit and the full encoded range before
+    // removing it; checking against ADDR_SHORT_MAX would incorrectly reject
+    // every valid address from 32 through 63 (encoded 0x41..0x7F).
+    if (out_short_addr == 0 || out_short_addr == 0xFF) {
         DALI_LOGW("Short address not found for %.6x", addr);
         out_short_addr = 0xFF;
     }
-    else if (out_short_addr <= ADDR_SHORT_MAX) {
+    else if (out_short_addr <= 0x7F && (out_short_addr & DALI_COMMAND) != 0) {
         out_short_addr >>= 1; // remove command bit
+    }
+    else {
+        DALI_LOGW("Invalid encoded short address 0x%02X for %.6x", out_short_addr, addr);
+        out_short_addr = 0xFF;
     }
 
     return true;
@@ -168,8 +212,8 @@ void DaliBusManager::endAddressScan() {
     }
 }
 
-void DaliBusManager::withdrawCurrentDevice() {
-    withdraw(_current_addr);
+bool DaliBusManager::withdrawCurrentDevice() {
+    return withdraw(_current_addr);
 }
 
 void DaliMaster::dumpStatusForDevice(uint8_t addr) {

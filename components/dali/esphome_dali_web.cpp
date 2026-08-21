@@ -11,11 +11,29 @@
 #include "esphome/components/json/json_util.h"
 #include <cmath>
 #include <cstdlib>
+#include <cerrno>
+#include <climits>
+#include <cctype>
 
 using namespace esphome;
 using namespace esphome::dali;
 
 namespace {
+
+bool parse_int_strict(const std::string &text, int min_value, int max_value, int &value) {
+    if (text.empty()) return false;
+    for (char c : text) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+    }
+    errno = 0;
+    char *end = nullptr;
+    long parsed = std::strtol(text.c_str(), &end, 10);
+    if (errno == ERANGE || end == text.c_str() || *end != '\0' || parsed < min_value || parsed > max_value) {
+        return false;
+    }
+    value = static_cast<int>(parsed);
+    return true;
+}
 
 // Single-page "cockpit" dashboard: lamp + group cards with direct control
 // (on/off, brightness, color temp), inline rename, group membership, scenes,
@@ -290,6 +308,21 @@ function controlCard(opts) {
     card.appendChild(ctRow);
   }
 
+  // Circadian (read-only: toggled via the "DALI Group N Circadian" HA switch,
+  // or auto-disabled here on a manual CT change above).
+  if (opts.circadian_supported) {
+    const circRow = document.createElement('div');
+    circRow.className = 'ctl-row';
+    const circLabel = document.createElement('label');
+    circLabel.textContent = 'Circadian';
+    circRow.appendChild(circLabel);
+    const circVal = document.createElement('span');
+    circVal.className = 'val';
+    circVal.textContent = opts.circadian_enabled ? 'On' : 'Off';
+    circRow.appendChild(circVal);
+    card.appendChild(circRow);
+  }
+
   if (opts.extra) card.appendChild(opts.extra);
 
   return card;
@@ -374,6 +407,7 @@ function renderGroups(groups, lamps) {
       target: 'group:' + g.group, on: g.on, brightness_pct: g.brightness_pct,
       color_temp_mireds: g.color_temp_mireds,
       color_temp_min_mireds: g.color_temp_min_mireds, color_temp_max_mireds: g.color_temp_max_mireds,
+      circadian_supported: g.circadian_supported, circadian_enabled: g.circadian_enabled,
       extra: membersDiv,
     });
     groupsGrid.appendChild(card);
@@ -548,11 +582,9 @@ setInterval(refreshLog, 7000);
 namespace esphome {
 namespace dali {
 
-void DaliWebDashboard::begin(uint16_t port, DaliBusComponent* bus) {
+void DaliWebDashboard::begin(web_server_base::WebServerBase* server_base, DaliBusComponent* bus) {
     bus_ = bus;
-    server_ = new AsyncWebServer(port);
-    server_->addHandler(this);
-    server_->begin();
+    server_base->add_handler(this);
 }
 
 // NOTE: ESPHome's web_server_idf AsyncWebServerRequest::init_response_() only maps
@@ -640,6 +672,8 @@ void DaliWebDashboard::handle_lamps_(AsyncWebServerRequest* request) {
             } else {
                 jg["color_temp_mireds"] = nullptr;
             }
+            jg["circadian_supported"] = bus_->circadian_configured(g);
+            if (bus_->circadian_configured(g)) jg["circadian_enabled"] = bus_->circadian_enabled(g);
         }
     });
     request->send(200, "application/json", body.c_str());
@@ -650,10 +684,11 @@ void DaliWebDashboard::handle_group_action_(AsyncWebServerRequest* request) {
         request->send(409, "text/plain", "missing addr/group/action");
         return;
     }
-    int addr = atoi(request->arg("addr").c_str());
-    int group = atoi(request->arg("group").c_str());
+    int addr;
+    int group;
     std::string action = request->arg("action");
-    if (addr < 0 || addr > ADDR_SHORT_MAX || group < 0 || group > 15) {
+    if (!parse_int_strict(request->arg("addr"), 0, ADDR_SHORT_MAX, addr) ||
+        !parse_int_strict(request->arg("group"), 0, 15, group)) {
         request->send(409, "text/plain", "addr/group out of range");
         return;
     }
@@ -679,8 +714,8 @@ void DaliWebDashboard::handle_scene_action_(AsyncWebServerRequest* request) {
         request->send(409, "text/plain", "missing scene/target/action");
         return;
     }
-    int scene = atoi(request->arg("scene").c_str());
-    if (scene < 0 || scene > 15) {
+    int scene;
+    if (!parse_int_strict(request->arg("scene"), 0, 15, scene)) {
         request->send(409, "text/plain", "scene out of range");
         return;
     }
@@ -690,19 +725,19 @@ void DaliWebDashboard::handle_scene_action_(AsyncWebServerRequest* request) {
     if (target == "all") {
         target_addr = ADDR_BROADCAST;
     } else if (target.rfind("group:", 0) == 0) {
-        int g = atoi(target.c_str() + 6);
-        if (g < 0 || g > 15) {
+        int g;
+        if (!parse_int_strict(target.substr(6), 0, 15, g)) {
             request->send(409, "text/plain", "bad group target");
             return;
         }
-        target_addr = (uint8_t) (ADDR_GROUP | g);
+        target_addr = static_cast<uint8_t>(ADDR_GROUP | g);
     } else if (target.rfind("lamp:", 0) == 0) {
-        int a = atoi(target.c_str() + 5);
-        if (a < 0 || a > ADDR_SHORT_MAX) {
+        int a;
+        if (!parse_int_strict(target.substr(5), 0, ADDR_SHORT_MAX, a)) {
             request->send(409, "text/plain", "bad lamp target");
             return;
         }
-        target_addr = (uint8_t) a;
+        target_addr = static_cast<uint8_t>(a);
     } else {
         request->send(409, "text/plain", "bad target");
         return;
@@ -732,8 +767,8 @@ void DaliWebDashboard::handle_identify_action_(AsyncWebServerRequest* request) {
         request->send(409, "text/plain", "missing addr");
         return;
     }
-    int addr = atoi(request->arg("addr").c_str());
-    if (addr < 0 || addr > ADDR_SHORT_MAX) {
+    int addr;
+    if (!parse_int_strict(request->arg("addr"), 0, ADDR_SHORT_MAX, addr)) {
         request->send(409, "text/plain", "addr out of range");
         return;
     }
@@ -754,20 +789,20 @@ void DaliWebDashboard::handle_lamp_control_(AsyncWebServerRequest* request) {
     }
     std::string target = request->arg("target");
     uint8_t target_addr;
+    int parsed_target;
     if (target.rfind("group:", 0) == 0) {
-        int g = atoi(target.c_str() + 6);
-        if (g < 0 || g > 15 || bus_->group_light((uint8_t) g) == nullptr) {
+        if (!parse_int_strict(target.substr(6), 0, 15, parsed_target) ||
+            bus_->group_light(static_cast<uint8_t>(parsed_target)) == nullptr) {
             request->send(409, "text/plain", "bad group target");
             return;
         }
-        target_addr = (uint8_t) (ADDR_GROUP | g);
+        target_addr = static_cast<uint8_t>(ADDR_GROUP | parsed_target);
     } else if (target.rfind("lamp:", 0) == 0) {
-        int a = atoi(target.c_str() + 5);
-        if (a < 0 || a > ADDR_SHORT_MAX) {
+        if (!parse_int_strict(target.substr(5), 0, ADDR_SHORT_MAX, parsed_target)) {
             request->send(409, "text/plain", "bad lamp target");
             return;
         }
-        target_addr = (uint8_t) a;
+        target_addr = static_cast<uint8_t>(parsed_target);
     } else {
         request->send(409, "text/plain", "bad target");
         return;
@@ -778,22 +813,34 @@ void DaliWebDashboard::handle_lamp_control_(AsyncWebServerRequest* request) {
     pending->target_addr = target_addr;
 
     if (request->hasArg("on")) {
+        int on_value;
+        if (!parse_int_strict(request->arg("on"), 0, 1, on_value)) {
+            delete pending;
+            request->send(409, "text/plain", "on must be 0 or 1");
+            return;
+        }
         pending->has_on = true;
-        pending->on = atoi(request->arg("on").c_str()) != 0;
+        pending->on = on_value != 0;
     }
     if (request->hasArg("brightness_pct")) {
-        int b = atoi(request->arg("brightness_pct").c_str());
-        if (b < 0 || b > 100) {
+        int b;
+        if (!parse_int_strict(request->arg("brightness_pct"), 0, 100, b)) {
             delete pending;
             request->send(409, "text/plain", "brightness_pct out of range");
             return;
         }
         pending->has_brightness = true;
-        pending->brightness_pct = (uint8_t) b;
+        pending->brightness_pct = static_cast<uint8_t>(b);
     }
     if (request->hasArg("color_temp_mireds")) {
+        int ct;
+        if (!parse_int_strict(request->arg("color_temp_mireds"), 0, UINT16_MAX, ct)) {
+            delete pending;
+            request->send(409, "text/plain", "color_temp_mireds out of range");
+            return;
+        }
         pending->has_color_temp = true;
-        pending->color_temp_mireds = (uint16_t) atoi(request->arg("color_temp_mireds").c_str());
+        pending->color_temp_mireds = static_cast<uint16_t>(ct);
     }
 
     if (!pending->has_on && !pending->has_brightness && !pending->has_color_temp) {
@@ -863,8 +910,8 @@ void DaliWebDashboard::handle_names_set_(AsyncWebServerRequest* request) {
         return;
     }
 
-    int index = atoi(request->arg("index").c_str());
-    if (index < 0 || index > max_index) {
+    int index;
+    if (!parse_int_strict(request->arg("index"), 0, max_index, index)) {
         request->send(409, "text/plain", "index out of range");
         return;
     }

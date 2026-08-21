@@ -8,9 +8,11 @@
 #include "esphome/core/gpio.h"
 #include "esphome/core/preferences.h"
 #include "esphome/components/light/light_state.h"
+#include "esphome/components/switch/switch.h"
 #include <esphome.h>
 #include <vector>
 #include "dali.h"
+#include "dali_circadian.h"
 #include "dali_event_log.h"
 #include "dali_names.h"
 #include "esphome_dali_input.h"
@@ -20,6 +22,11 @@ namespace esphome {
 
 namespace binary_sensor { class BinarySensor; }  // fwd: per-lamp availability sensors
 namespace sensor { class Sensor; }  // fwd: bus diagnostic counters
+// fwd: only a pointer is stored/compared-to-null here; the full type (and its
+// real header, which only exists in the build tree when `sun:` is actually
+// configured) is needed only in esphome_dali.cpp's update_circadian_(), guarded
+// by DALI_CIRCADIAN_ENABLED -- see CLAUDE.md's circadian section.
+namespace sun { class Sun; }
 
 namespace dali {
 
@@ -85,7 +92,7 @@ public:
     }
 
     void register_static_addr(short_addr_t short_addr) {
-        if (short_addr < ADDR_SHORT_MAX) {
+        if (short_addr <= ADDR_SHORT_MAX) {
             m_addresses[short_addr] = 0xFFFFFF;
         }
     }
@@ -141,6 +148,8 @@ public:
     /// one optimistic "DALI Group N" light per active group.
     void set_expose_groups(bool v) { m_expose_groups = v; }
     bool expose_groups() const { return m_expose_groups; }
+    /// @brief Maximum group numbers (0..max_groups-1) exposed as dynamic lights.
+    void set_max_groups(uint8_t max_groups) { m_max_groups = max_groups > 16 ? 16 : max_groups; }
 
     /// @brief Whether to expose 16 "DALI Scene N" recall buttons + a scene number and
     /// store/clear buttons.
@@ -245,9 +254,55 @@ public:
     bool is_disconnected() const { return m_disconnected_; }
     bool is_bus_online() const { return m_bus_online_; }
 
-    /// @brief Whether the web dashboard is enabled, and which TCP port it listens on.
+    /// @brief Whether the web dashboard is enabled, and which TCP port it listens on
+    /// (must match the `web_server:` component's own `port` -- enforced at compile
+    /// time by __init__.py's _final_validate_dashboard).
     void set_dashboard_enabled(bool v) { m_dashboard_enabled = v; }
     void set_dashboard_port(uint16_t port) { m_dashboard_port = port; }
+#ifdef DALI_WEB_DASHBOARD_ENABLED
+    /// @brief The shared `web_server_base` instance (also used by `web_server:`)
+    /// that the dashboard registers itself onto in setup(), taking priority over
+    /// the stock web_server UI for every path (DaliWebDashboard::canHandle() always
+    /// returns true) since dali only wants the API's webserver_port side effect,
+    /// not the stock UI itself.
+    void set_web_server_base(web_server_base::WebServerBase* base) { m_web_server_base_ = base; }
+#endif
+
+    /// @brief Circadian color temperature: elevation thresholds (degrees) for
+    /// the day/night color-temperature interpolation, and the `sun:` component
+    /// used to read current elevation. If `sun` is never set, the feature is
+    /// entirely inert (no circadian_groups can be configured without it -- see
+    /// __init__.py's _validate_circadian).
+    void set_circadian_day_elevation(float v) { m_circadian_day_elevation_ = v; }
+    void set_circadian_night_elevation(float v) { m_circadian_night_elevation_ = v; }
+    void set_sun(sun::Sun* s) { m_sun_ = s; }
+
+    /// @brief Register `group` (0..15) for circadian color-temperature control,
+    /// with the given day/night mireds. Called once per `circadian_groups` YAML
+    /// entry from to_code().
+    void add_circadian_group(uint8_t group, uint16_t day_mireds, uint16_t night_mireds);
+
+    /// @brief Enable/disable circadian color-temperature control for `group`
+    /// (0..15) and persist the change to flash. Called by the "DALI Group N
+    /// Circadian" switch's write_state().
+    void set_circadian_enabled(uint8_t group, bool enabled);
+    bool circadian_enabled(uint8_t group) const;
+
+    /// @brief Whether `group` (0..15) has a `circadian_groups` YAML entry at
+    /// all, independent of whether it's currently enabled. Used by the web
+    /// dashboard (/api/lamps) to only report circadian state for groups where
+    /// it's actually configured.
+    bool circadian_configured(uint8_t group) const {
+        return group < 16 && m_circadian_groups_[group].configured;
+    }
+
+    /// @brief Called by a "DALI Group N" light when it sends a color-temperature
+    /// command that did NOT originate from update_circadian_() (i.e. a manual
+    /// change via Home Assistant or the web dashboard). If `group` has circadian
+    /// enabled, disables it (persisting + republishing the switch entity) so the
+    /// automatic 60s update doesn't silently revert the user's change. No-op if
+    /// circadian is already disabled for `group`.
+    void disable_circadian_for_manual_override(uint8_t group);
 
     /// @brief Device-class string-table indices (registered in codegen). 0 = unset.
     /// Passed into configure_entity_() so Home Assistant renders the right
@@ -297,14 +352,17 @@ public: // DaliPort
     void sendForwardFrame(uint8_t address, uint8_t data) override;
     uint8_t receiveBackwardFrame(unsigned long timeout_ms = DALI_BACKWARD_TIMEOUT_MS) override;
 
+    /// @brief Whether the most recent forward frame was aborted by a collision.
+    bool lastTransmissionHadCollision() const override { return m_tx_collision_; }
+
 private:
-    void writeBit(bool bit);
+    bool writeBit(bool bit);
     /// @brief If `input_devices` is enabled, sample the RX pin during a half-bit
     /// where `writeBit()` is releasing the bus (per dali_tx::master_releasing) and
     /// bump the collision counter if another master is driving it low. half: 0 =
     /// first half-bit, 1 = second. No-op (and no extra delay) if input_devices is off.
-    void check_collision_(bool bit, int half);
-    void writeByte(uint8_t b);
+    bool check_collision_(bool bit, int half);
+    bool writeByte(uint8_t b);
     uint8_t readByte();
 
     /// @brief Return the lowest short address (0..63) not marked used, or 0xFF if
@@ -338,6 +396,15 @@ private:
     /// @brief Create the group-membership controls: target-address + group-number
     /// selectors, and Add/Remove buttons.
     void create_group_controls();
+    /// @brief Create one "DALI Group N Circadian" switch per configured
+    /// circadian group (see m_circadian_groups_), reflecting the restored
+    /// enabled mask.
+    void create_circadian_switches_();
+    /// @brief Periodic (every DALI_CIRCADIAN_UPDATE_MS) recompute of circadian
+    /// color temperature from current sun elevation, re-applied to each
+    /// enabled, currently-on group light via perform_call(). No-op if no
+    /// `sun:` component was configured.
+    void update_circadian_();
 
     /// @brief Fold one completed poll round's result into bus-health state. Marks the
     /// bus down after DALI_BUS_DOWN_ROUNDS all-NACK rounds; recovers on any response.
@@ -367,11 +434,18 @@ private:
     /// @brief Persist the set of short addresses currently present on the bus.
     void save_inventory_(uint64_t present_mask);
 
+    /// @brief Load the persisted circadian-enabled mask (key 0xDA111103).
+    void restore_circadian_();
+    /// @brief Persist the circadian-enabled mask.
+    void save_circadian_();
+
     InternalGPIOPin* m_rxPin;
     GPIOPin* m_txPin;
 
     DaliInputListener m_input_listener;
     bool m_input_devices = false;
+    bool m_tx_collision_ = false;
+    bool m_inter_frame_pending_ = false;
 
     bool m_discovery = false;
     uint32_t discovery_start_ms_ = 0;  // millis() when the deferred-discovery wait began
@@ -406,10 +480,32 @@ private:
     // Group lights (auto-discovered). m_group_created_[g] guards against creating a
     // "DALI Group g" light twice across discovery passes.
     bool m_expose_groups = true;
+    uint8_t m_max_groups = 16;
     bool m_group_created_[16] = { false };
     // DaliLight* for each created "DALI Group N" light, used to read/publish a
     // group's own color temperature (scene CT capture/recall). nullptr if not created.
     DaliLight* m_group_lights_[16] = { nullptr };
+
+    // Circadian color temperature: per-group day/night mireds (from
+    // circadian_groups YAML), the sun component used for elevation, global
+    // elevation thresholds, the enabled mask (persisted to flash, key
+    // 0xDA111103), and the last mireds applied per group (reset to "none"
+    // when a group is off, so it's promptly re-applied on the next turn-on).
+    struct CircadianGroupConfig {
+        bool configured = false;
+        uint16_t day_mireds = 0;
+        uint16_t night_mireds = 0;
+    };
+    CircadianGroupConfig m_circadian_groups_[16] = {};
+    sun::Sun* m_sun_ = nullptr;
+    float m_circadian_day_elevation_ = 6.0f;
+    float m_circadian_night_elevation_ = -4.0f;
+    uint32_t m_last_circadian_update_ms_ = 0;
+    static constexpr uint32_t DALI_CIRCADIAN_UPDATE_MS = 60000;
+    uint16_t m_circadian_enabled_mask_ = 0;
+    ESPPreferenceObject m_circadian_pref_;
+    optional<uint16_t> m_circadian_last_applied_mireds_[16] = {};
+    switch_::Switch* m_circadian_switches_[16] = { nullptr };
 
     // Scene controls.
     bool m_expose_scenes = true;
@@ -450,15 +546,17 @@ private:
         uint8_t original_level = 0;
     } m_identify_;
 
-    // Web dashboard (lamps/groups/scenes). Only constructed if enabled. Starting
-    // AsyncWebServer::begin() before the network stack is up aborts (httpd_start
-    // hits an unmet FreeRTOS assertion), so the actual `begin()` call is deferred
-    // from setup() to the first loop() iteration where network::is_connected().
+    // Web dashboard (lamps/groups/scenes). Only constructed if enabled. Registers
+    // itself onto the shared web_server_base in setup() -- safe to do immediately
+    // (unlike the old standalone-AsyncWebServer approach, which had to defer
+    // begin() until network::is_connected() to avoid an httpd_start() abort): the
+    // actual socket isn't created until web_server:'s own setup() calls init(),
+    // at a later setup_priority (WIFI - 1, after the network stack is up).
     bool m_dashboard_enabled = false;
     uint16_t m_dashboard_port = 8080;
 #ifdef DALI_WEB_DASHBOARD_ENABLED
     DaliWebDashboard* m_dashboard_ = nullptr;
-    bool m_dashboard_started_ = false;
+    web_server_base::WebServerBase* m_web_server_base_ = nullptr;
 #endif
 
     // Fade in/out times in milliseconds (runtime-adjustable via HA number entities).

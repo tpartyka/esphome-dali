@@ -5,6 +5,8 @@
 .vscode/ipch
 .venv/
 .esphome/
+.claude/
+.hermes/
 __pycache__/
 
 /secrets.yaml
