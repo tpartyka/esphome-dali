@@ -1500,10 +1500,13 @@ void DaliBusComponent::dump_config() {
     }
 }
 
+// DALI Te is 416.67us. Round up so each required minimum interval remains
+// compliant despite integer microsecond delays.
 #define QUARTER_BIT_PERIOD 208
-#define HALF_BIT_PERIOD 416
-#define BIT_PERIOD 833
+#define HALF_BIT_PERIOD 417
+#define BIT_PERIOD (HALF_BIT_PERIOD * 2)
 #define INTER_FRAME_MIN_PERIOD (HALF_BIT_PERIOD * 22)
+#define STOP_CONDITION_PERIOD (HALF_BIT_PERIOD * 4)
 
 // Collision sampling splits each half-bit's delay around a single digital_read(),
 // so the total delay (and thus the Manchester bit period) is unchanged.
@@ -1552,10 +1555,10 @@ bool DaliBusComponent::writeByte(uint8_t b) {
 bool DaliBusComponent::readBackwardFrame_(uint8_t &data) {
     // The start transition was already observed by receiveBackwardFrame(): it is
     // the first (asserted) half of the mandatory logical-1 start symbol.
-    // Sample its second half, then both halves of every data bit and the first
-    // complete stop bit. A frame is accepted only if it is structurally valid
+    // Sample its second half, then both halves of every data bit and both
+    // complete stop bits. A frame is accepted only if it is structurally valid
     // Manchester, not merely because eight GPIO samples form a non-zero byte.
-    bool halves[20];
+    bool halves[22];
     halves[0] = true;
 
     delayMicroseconds(HALF_BIT_PERIOD + QUARTER_BIT_PERIOD);
@@ -1572,6 +1575,10 @@ bool DaliBusComponent::readBackwardFrame_(uint8_t &data) {
     halves[18] = m_rxPin->digital_read() == LOW;
     delayMicroseconds(HALF_BIT_PERIOD);
     halves[19] = m_rxPin->digital_read() == LOW;
+    delayMicroseconds(HALF_BIT_PERIOD);
+    halves[20] = m_rxPin->digital_read() == LOW;
+    delayMicroseconds(HALF_BIT_PERIOD);
+    halves[21] = m_rxPin->digital_read() == LOW;
 
     return dali_rx::decode_backward_frame_halves(halves, data);
 }
@@ -1609,8 +1616,12 @@ void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
         bool complete = writeBit(1); // START bit
         if (complete) complete = writeByte(address);
         if (complete) complete = writeByte(data);
-        // Always leave the bus driven to idle (no half-finished frame on the wire).
+        // A DALI forward frame ends with two complete idle stop bits. Hold the
+        // released state explicitly before listening for a reply; otherwise a
+        // slow RX transceiver can still report the final asserted data half-bit
+        // as a false stuck-low bus.
         m_txPin->digital_write(LOW);
+        if (complete) delayMicroseconds(STOP_CONDITION_PERIOD);
         if (!complete) {
             DALI_LOGW("TX aborted after DALI bus collision");
         }

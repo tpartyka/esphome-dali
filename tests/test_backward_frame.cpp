@@ -5,9 +5,9 @@
 
 namespace {
 
-void encode_valid_backward_frame(uint8_t value, bool (&halves)[20]) {
+void encode_valid_backward_frame(uint8_t value, bool (&halves)[22]) {
     // Start bit is logical 1. Each data bit is Manchester encoded as
-    // [bit, !bit]. The final two half-bits must be idle/released.
+    // [bit, !bit]. The final two stop bits must be idle/released.
     halves[0] = true;
     halves[1] = false;
     for (int bit = 0; bit < 8; bit++) {
@@ -17,10 +17,12 @@ void encode_valid_backward_frame(uint8_t value, bool (&halves)[20]) {
     }
     halves[18] = false;
     halves[19] = false;
+    halves[20] = false;
+    halves[21] = false;
 }
 
 TEST(backward_frame_decodes_valid_manchester_byte) {
-    bool halves[20]{};
+    bool halves[22]{};
     encode_valid_backward_frame(0xA5, halves);
 
     uint8_t decoded = 0;
@@ -29,7 +31,7 @@ TEST(backward_frame_decodes_valid_manchester_byte) {
 }
 
 TEST(backward_frame_rejects_invalid_start_symbol) {
-    bool halves[20]{};
+    bool halves[22]{};
     encode_valid_backward_frame(0x5A, halves);
     halves[0] = false;
 
@@ -38,7 +40,7 @@ TEST(backward_frame_rejects_invalid_start_symbol) {
 }
 
 TEST(backward_frame_rejects_non_manchester_data_symbol) {
-    bool halves[20]{};
+    bool halves[22]{};
     encode_valid_backward_frame(0x5A, halves);
     halves[7] = halves[6];
 
@@ -47,9 +49,18 @@ TEST(backward_frame_rejects_non_manchester_data_symbol) {
 }
 
 TEST(backward_frame_rejects_asserted_stop_period) {
-    bool halves[20]{};
+    bool halves[22]{};
     encode_valid_backward_frame(0x5A, halves);
     halves[18] = true;
+
+    uint8_t decoded = 0;
+    CHECK(!dali_rx::decode_backward_frame_halves(halves, decoded));
+}
+
+TEST(backward_frame_rejects_asserted_second_stop_bit) {
+    bool halves[22]{};
+    encode_valid_backward_frame(0x5A, halves);
+    halves[20] = true;
 
     uint8_t decoded = 0;
     CHECK(!dali_rx::decode_backward_frame_halves(halves, decoded));
