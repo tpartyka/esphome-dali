@@ -15,6 +15,7 @@
 #include "dali_circadian.h"
 #include "dali_event_log.h"
 #include "dali_names.h"
+#include "dali_scene_metadata.h"
 #include "esphome_dali_input.h"
 #include "esphome_dali_web.h"
 
@@ -513,11 +514,13 @@ private:
     bool m_expose_scenes = true;
     uint8_t m_selected_scene_ = 0;
 
-    // Software per-scene color-temperature table (DALI Part 102 scenes only store
-    // brightness). Indexed by scene number; only captured/recalled for group or
-    // individual-lamp targets (not ADDR_BROADCAST, which the HA "DALI Scene N"
-    // buttons use). RAM-only -- resets on reboot.
-    optional<uint16_t> m_scene_color_temp_[16] = {};
+    // Software per-target, per-scene color-temperature metadata. DALI Part 102
+    // scenes store brightness; this extension keeps an optional CT for each
+    // individual lamp/group target and persists it across reboot.
+    dali_scene_metadata::SceneColorTemperatureBlob m_scene_color_temps_{};
+    ESPPreferenceObject m_scene_color_temp_pref_;
+    void restore_scene_color_temps_();
+    void save_scene_color_temps_();
 
     // Group-membership controls (Add/Remove the target address to/from a group).
     uint8_t m_group_target_addr_ = 0;
