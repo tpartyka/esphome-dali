@@ -27,7 +27,6 @@
 #include "dali_tx_collision.h"
 
 //static const char *const TAG = "dali";
-static const bool DEBUG_LOG_RXTX = false;
 
 using namespace esphome;
 using namespace dali;
@@ -1639,7 +1638,7 @@ void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
     ListenerSuppressGuard suppress(&m_input_listener, m_input_devices);
     m_tx_collision_ = false;
 
-    if (DEBUG_LOG_RXTX) {
+    if (m_debug_frames) {
         DALI_LOGD("TX: %02x %02x", address, data);
         delayMicroseconds(BIT_PERIOD*8);
         //Serial.print("TX: "); Serial.print(address, HEX); Serial.print(" "); Serial.println(data, HEX);
@@ -1686,7 +1685,7 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
     // otherwise make isControlGearPresent()/compareSearchAddress() see a bus
     // full of devices and send run_discovery() into a runaway loop.
     if (m_rxPin->digital_read() == LOW) {
-        if (DEBUG_LOG_RXTX) {
+        if (m_debug_frames) {
             DALI_LOGD("RX: 00 (NACK, line stuck low)");
         }
         note_disconnected_(true);
@@ -1698,7 +1697,7 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
     // returns a NACK instead of spinning forever (see DALI_BACKWARD_TIMEOUT_MS).
     while (m_rxPin->digital_read() == HIGH) {
         if (millis() - startTime >= timeout_ms) {
-            if (DEBUG_LOG_RXTX) {
+            if (m_debug_frames) {
                 DALI_LOGD("RX: 00 (NACK)");
             }
             return 0;
@@ -1713,13 +1712,13 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
     }
 
     if (!valid) {
-        if (DEBUG_LOG_RXTX) {
+        if (m_debug_frames) {
             DALI_LOGD("RX: 00 (NACK, malformed backward frame)");
         }
         return 0;
     }
 
-    if (DEBUG_LOG_RXTX) {
+    if (m_debug_frames) {
         DALI_LOGD("RX: %02x", data);
     }
 

@@ -39,6 +39,7 @@ CONF_CIRCADIAN_NIGHT_ELEVATION = 'night_elevation'
 CONF_CIRCADIAN_GROUPS = 'circadian_groups'
 CONF_DAY_COLOR_TEMPERATURE = 'day_color_temperature'
 CONF_NIGHT_COLOR_TEMPERATURE = 'night_color_temperature'
+CONF_DEBUG_FRAMES = 'debug_frames'
 
 
 def _validate_dali_level(value):
@@ -192,6 +193,9 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_ON_INPUT_FRAME): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DaliInputFrameTrigger),
     }),
+    # Log every transmitted forward frame and received backward frame at DEBUG.
+    # Kept opt-in because discovery and polling can generate substantial output.
+    cv.Optional(CONF_DEBUG_FRAMES, default=False): cv.boolean,
     # Circadian color temperature: requires a `sun:` component (astronomical
     # elevation) to determine time of day. If circadian_groups is empty (the
     # default), the feature is entirely inert.
@@ -237,6 +241,7 @@ async def to_code(config: OrderedDict):
     cg.add(var.set_expose_scenes(config[CONF_EXPOSE_SCENES]))
     cg.add(var.set_dashboard_enabled(config[CONF_EXPOSE_DASHBOARD]))
     cg.add(var.set_dashboard_port(config[CONF_DASHBOARD_PORT]))
+    cg.add(var.set_debug_frames(config[CONF_DEBUG_FRAMES]))
     if config[CONF_EXPOSE_DASHBOARD] and CORE.is_esp32:
         web_server_base_var = await cg.get_variable(config[CONF_WEB_SERVER_BASE_ID])
         cg.add(var.set_web_server_base(web_server_base_var))

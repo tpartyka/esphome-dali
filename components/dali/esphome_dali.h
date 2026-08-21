@@ -261,6 +261,8 @@ public:
     /// time by __init__.py's _final_validate_dashboard).
     void set_dashboard_enabled(bool v) { m_dashboard_enabled = v; }
     void set_dashboard_port(uint16_t port) { m_dashboard_port = port; }
+    /// Enable DEBUG-level logging of DALI forward and backward frames.
+    void set_debug_frames(bool v) { m_debug_frames = v; }
 #ifdef DALI_WEB_DASHBOARD_ENABLED
     /// @brief The shared `web_server_base` instance (also used by `web_server:`)
     /// that the dashboard registers itself onto in setup(), taking priority over
@@ -572,6 +574,7 @@ private:
     // at a later setup_priority (WIFI - 1, after the network stack is up).
     bool m_dashboard_enabled = false;
     uint16_t m_dashboard_port = 8080;
+    bool m_debug_frames = false;
 #ifdef DALI_WEB_DASHBOARD_ENABLED
     DaliWebDashboard* m_dashboard_ = nullptr;
     web_server_base::WebServerBase* m_web_server_base_ = nullptr;
