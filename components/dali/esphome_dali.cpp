@@ -1437,16 +1437,18 @@ void DaliBusComponent::loop() {
     for (auto* light : m_dynamic_lights) {
         light->loop();
     }
-    for (auto* light : m_command_lights) {
-        light->loop();
-    }
+    // Interactive writes win over background polling. A dispatched write is a
+    // synchronous, atomic DTR/colour sequence, so no queued poll can interleave
+    // between its prerequisite frames and final command.
+    const bool interactive_dispatched = process_next_transaction_();
 
     // Reflect external lamp changes (broadcast, other controllers) back into HA by
     // polling real device state. One device per tick, round-robin, so each is polled
     // roughly every m_state_poll_interval_ms regardless of how many there are. While
     // the bus is marked down we probe slowly (DALI_BUS_DOWN_PROBE_MS) instead of
     // hammering a dead bus, and recover as soon as any lamp answers again.
-    if (m_state_poll_interval_ms > 0 && !m_pollable_lights.empty()) {
+    if (!interactive_dispatched &&
+        m_state_poll_interval_ms > 0 && !m_pollable_lights.empty()) {
         uint32_t per_tick;
         if (!m_bus_online_) {
             per_tick = DALI_BUS_DOWN_PROBE_MS;
@@ -1477,6 +1479,40 @@ void DaliBusComponent::loop() {
     }
 
     update_circadian_();
+}
+
+void DaliBusComponent::enqueue_light_write(DaliLight* light) {
+    m_transaction_queue_.enqueue(light, dali_transaction::Priority::INTERACTIVE);
+    this->enable_loop();
+}
+
+void DaliBusComponent::enqueue_broadcast_brightness(uint8_t level) {
+    m_broadcast_brightness_ = level;
+    m_broadcast_brightness_pending_ = true;
+    m_transaction_queue_.enqueue(&m_broadcast_brightness_pending_, dali_transaction::Priority::INTERACTIVE);
+    this->enable_loop();
+}
+
+bool DaliBusComponent::process_next_transaction_() {
+    void* payload = nullptr;
+    if (!m_transaction_queue_.take_next(payload)) return false;
+
+    if (payload == &m_broadcast_brightness_pending_) {
+        if (!m_broadcast_brightness_pending_) return false;
+        const uint8_t level = m_broadcast_brightness_;
+        m_broadcast_brightness_pending_ = false;
+        dali.lamp.setBrightness(ADDR_BROADCAST, level);
+        return true;
+    }
+
+    auto* light = static_cast<DaliLight*>(payload);
+    if (light->dispatch_pending_write(millis())) return true;
+    // The light is still inside its per-address debounce window. Keep it queued
+    // behind other work; polling remains eligible until this write becomes due.
+    if (light->has_pending_write()) {
+        m_transaction_queue_.enqueue(light, dali_transaction::Priority::INTERACTIVE);
+    }
+    return false;
 }
 
 void DaliBusComponent::dump_config() {

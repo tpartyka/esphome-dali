@@ -27,6 +27,7 @@ SOURCES := test_main.cpp \
            test_bus_manager.cpp \
            test_addressing.cpp \
            test_collision.cpp \
+           test_transaction_queue.cpp \
            test_debounce.cpp \
            test_availability.cpp \
            test_bus_health.cpp \

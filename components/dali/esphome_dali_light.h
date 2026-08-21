@@ -79,9 +79,15 @@ class DaliLight : public light::LightOutput, public Component {
     void setup_state(light::LightState *state) override;
     void write_state(light::LightState *state) override;
 
-    /// @brief Flushes a debounced bus command once DALI_LIGHT_COMMAND_DEBOUNCE_MS
-    /// has elapsed since the last one (see write_state()/schedule_or_send_()).
+    /// @brief Re-enqueues a pending command when called by an external component
+    /// loop. The bus component owns actual dispatch, so no other activity can
+    /// interleave with a DTR/colour sequence.
     void loop() override;
+
+    /// @brief Execute this light's queued write if its debounce period elapsed.
+    /// Called only by DaliBusComponent's transaction scheduler.
+    bool dispatch_pending_write(uint32_t now);
+    bool has_pending_write() const { return pending_write_.valid; }
 
     /// @brief Poll the lamp's real availability + on/off + brightness and publish to
     /// Home Assistant. Reflects external changes and marks the lamp unavailable when

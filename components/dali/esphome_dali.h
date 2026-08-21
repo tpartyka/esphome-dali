@@ -16,6 +16,7 @@
 #include "dali_event_log.h"
 #include "dali_names.h"
 #include "dali_scene_metadata.h"
+#include "dali_transaction_queue.h"
 #include "esphome_dali_input.h"
 #include "esphome_dali_web.h"
 
@@ -339,6 +340,14 @@ public:
         this->enable_loop();  // ensure loop() runs to flush debounced commands
     }
 
+    /// Queue an interactive light write. Repeated writes from the same light
+    /// coalesce to its most recent pending state before they reach the bus.
+    void enqueue_light_write(DaliLight* light);
+
+    /// Queue a coalesced broadcast brightness write from the dali output
+    /// platform. It shares the same scheduler as interactive light writes.
+    void enqueue_broadcast_brightness(uint8_t level);
+
     /// @brief Optimistically apply `update` to the HA-published state of every
     /// individually-pollable lamp that is a member of `group` (0..15), per
     /// m_group_membership_. Called when a "DALI Group N" light's write_state()
@@ -462,6 +471,10 @@ private:
     // Lights (static + dynamic) we periodically poll so HA reflects external state.
     std::vector<DaliLight*> m_pollable_lights;
     std::vector<DaliLight*> m_command_lights;
+    dali_transaction::Queue m_transaction_queue_;
+    bool m_broadcast_brightness_pending_ = false;
+    uint8_t m_broadcast_brightness_ = 0;
+    bool process_next_transaction_();
     uint32_t m_state_poll_interval_ms = 15000;
     uint32_t m_last_poll_ms = 0;
     size_t m_poll_index = 0;

@@ -375,18 +375,10 @@ void dali::DaliLight::write_state(light::LightState *state) {
 }
 
 void dali::DaliLight::schedule_or_send_(const PendingBusWrite &pw) {
-    uint32_t now = millis();
-    if (dali_debounce::debounce_should_send_now(now, last_bus_write_ms_, DALI_LIGHT_COMMAND_DEBOUNCE_MS, has_sent_once_)) {
-        send_to_bus_(pw);
-        last_bus_write_ms_ = now;
-        has_sent_once_ = true;
-        pending_write_.valid = false;
-    } else {
-        // Too soon since the last command to this address: hold this one and let
-        // loop() flush it once the debounce window elapses. A newer pending write
-        // simply overwrites an older one, so only the latest value is ever sent.
-        pending_write_ = pw;
-    }
+    // The bus owns dispatch. A newer request overwrites the old one before the
+    // transaction is selected, coalescing slider traffic to the newest state.
+    pending_write_ = pw;
+    bus->enqueue_light_write(this);
 }
 
 void dali::DaliLight::send_to_bus_(const PendingBusWrite &pw) {
@@ -412,14 +404,19 @@ void dali::DaliLight::send_to_bus_(const PendingBusWrite &pw) {
 }
 
 void dali::DaliLight::loop() {
-    if (!pending_write_.valid) return;
-    uint32_t now = millis();
-    if (!dali_debounce::debounce_should_flush(now, last_bus_write_ms_, DALI_LIGHT_COMMAND_DEBOUNCE_MS)) return;
+    if (pending_write_.valid) bus->enqueue_light_write(this);
+}
+
+bool dali::DaliLight::dispatch_pending_write(uint32_t now) {
+    if (!pending_write_.valid) return false;
+    if (!dali_debounce::debounce_should_send_now(now, last_bus_write_ms_, DALI_LIGHT_COMMAND_DEBOUNCE_MS, has_sent_once_)) return false;
 
     PendingBusWrite pw = pending_write_;
     pending_write_.valid = false;
     send_to_bus_(pw);
     last_bus_write_ms_ = now;
+    has_sent_once_ = true;
+    return true;
 }
 
 void dali::DaliLight::publish_status_() {

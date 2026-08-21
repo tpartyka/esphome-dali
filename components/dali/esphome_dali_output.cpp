@@ -29,6 +29,7 @@ void DaliOutput::write_state(float state) {
         level = 0;
     }
 
-    // Broadcast the frame to the DALI bus
-    bus->dali.lamp.setBrightness(ADDR_BROADCAST, level);
+    // Coalesce rapid output updates and let the bus scheduler serialize them
+    // with light writes and polling.
+    bus->enqueue_broadcast_brightness(level);
 }
