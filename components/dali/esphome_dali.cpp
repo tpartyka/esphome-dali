@@ -21,6 +21,7 @@
 #include "esphome/components/sensor/sensor.h"
 #endif
 #include "dali_bus_health.h"
+#include "dali_backward_frame.h"
 #include "dali_inventory.h"
 #include "dali_tx_collision.h"
 
@@ -1511,14 +1512,31 @@ bool DaliBusComponent::writeByte(uint8_t b) {
     return true;
 }
 
-uint8_t DaliBusComponent::readByte() {
-    uint8_t byte = 0;
-    for (int i = 0; i < 8; i++) {
-        byte <<= 1;
-        byte |= m_rxPin->digital_read();
-        delayMicroseconds(BIT_PERIOD); // 1/1200 seconds
+bool DaliBusComponent::readBackwardFrame_(uint8_t &data) {
+    // The start transition was already observed by receiveBackwardFrame(): it is
+    // the first (asserted) half of the mandatory logical-1 start symbol.
+    // Sample its second half, then both halves of every data bit and the first
+    // complete stop bit. A frame is accepted only if it is structurally valid
+    // Manchester, not merely because eight GPIO samples form a non-zero byte.
+    bool halves[20];
+    halves[0] = true;
+
+    delayMicroseconds(HALF_BIT_PERIOD + QUARTER_BIT_PERIOD);
+    halves[1] = m_rxPin->digital_read() == HIGH;
+
+    for (int bit = 0; bit < 8; bit++) {
+        delayMicroseconds(HALF_BIT_PERIOD);
+        halves[2 + bit * 2] = m_rxPin->digital_read() == HIGH;
+        delayMicroseconds(HALF_BIT_PERIOD);
+        halves[3 + bit * 2] = m_rxPin->digital_read() == HIGH;
     }
-    return byte;
+
+    delayMicroseconds(HALF_BIT_PERIOD);
+    halves[18] = m_rxPin->digital_read() == HIGH;
+    delayMicroseconds(HALF_BIT_PERIOD);
+    halves[19] = m_rxPin->digital_read() == HIGH;
+
+    return dali_rx::decode_backward_frame_halves(halves, data);
 }
 
 void DaliBusComponent::resetBus() {
@@ -1603,14 +1621,18 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
         }
     }
 
+    bool valid = false;
     {
-        // This is timing critical
+        // This is timing critical.
         InterruptLock lock;
+        valid = readBackwardFrame_(data);
+    }
 
-        delayMicroseconds(BIT_PERIOD); // Wait for first data bit
-        delayMicroseconds(QUARTER_BIT_PERIOD); // Wait a quater bit period to sample middle of first half bit
-        data = readByte();
-        delayMicroseconds(BIT_PERIOD*2); // Wait for STOP bits
+    if (!valid) {
+        if (DEBUG_LOG_RXTX) {
+            DALI_LOGD("RX: 00 (NACK, malformed backward frame)");
+        }
+        return 0;
     }
 
     if (DEBUG_LOG_RXTX) {

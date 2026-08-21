@@ -363,7 +363,9 @@ private:
     /// first half-bit, 1 = second. No-op (and no extra delay) if input_devices is off.
     bool check_collision_(bool bit, int half);
     bool writeByte(uint8_t b);
-    uint8_t readByte();
+    /// Sample, structurally validate, and decode one complete DALI backward frame.
+    /// Returns false for malformed Manchester symbols or an asserted stop period.
+    bool readBackwardFrame_(uint8_t &data);
 
     /// @brief Return the lowest short address (0..63) not marked used, or 0xFF if
     /// none are free. Used to assign new devices into address gaps.
