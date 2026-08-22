@@ -1,4 +1,5 @@
 #include "esphome_dali_input.h"
+#include "dali_backward_frame.h"
 #include "dali_input_frame.h"
 #include "esphome/core/log.h"
 
@@ -79,7 +80,11 @@ void DaliInputListener::gpio_intr(DaliInputListener *self) {
 
 void DaliInputListener::input_listener_setup(InternalGPIOPin *rx_pin) {
   this->rx_pin_ = rx_pin;
-  this->rx_level_ = true;  // idle bus is HIGH
+  // Keep the decoder's physical-bus convention (idle = HIGH, asserted = LOW)
+  // even though ESPHome returns the configured logical level. RX is inverted
+  // for the active-low Pico-DALI2 transceiver, so invert the normalized
+  // asserted state once at this boundary.
+  this->rx_level_ = !dali_rx::logical_rx_is_asserted(this->rx_pin_->digital_read());
   this->rx_last_edge_us_ = micros();
   this->rx_reset_();
   this->rx_pin_->attach_interrupt(&DaliInputListener::gpio_intr, this, gpio::INTERRUPT_ANY_EDGE);

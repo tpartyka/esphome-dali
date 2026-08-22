@@ -4,6 +4,13 @@
 
 namespace dali_rx {
 
+/// ESPHome applies a YAML pin's `inverted` setting in digital_read().  The
+/// Pico-DALI2 receiver is physically active-low, so its YAML pin is inverted
+/// and an asserted DALI line is exposed here as logical HIGH.
+inline bool logical_rx_is_asserted(bool logical_level) {
+    return logical_level;
+}
+
 /// Decode the logical half-bit levels of a DALI backward frame.
 ///
 /// The caller provides a start symbol, eight Manchester-encoded data bits, and

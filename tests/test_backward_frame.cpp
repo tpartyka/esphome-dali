@@ -5,6 +5,13 @@
 
 namespace {
 
+TEST(logical_rx_polarity_matches_inverted_active_low_transceiver) {
+    // ESPHome's `inverted: true` maps the transceiver's physical LOW (DALI
+    // asserted) to logical HIGH and physical HIGH (idle) to logical LOW.
+    CHECK(dali_rx::logical_rx_is_asserted(true));
+    CHECK(!dali_rx::logical_rx_is_asserted(false));
+}
+
 void encode_valid_backward_frame(uint8_t value, bool (&halves)[22]) {
     // Start bit is logical 1. Each data bit is Manchester encoded as
     // [bit, !bit]. The final two stop bits must be idle/released.

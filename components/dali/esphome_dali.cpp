@@ -1550,9 +1550,10 @@ void DaliBusComponent::dump_config() {
 
 bool DaliBusComponent::check_collision_(bool bit, int half) {
     if (!m_input_devices) return false;
-    // A conventional DALI receiver is HIGH while the bus is released/idle and
-    // LOW while it is asserted (pulled to 0V).
-    bool rx_asserted = (m_rxPin->digital_read() == LOW);
+    // `digital_read()` is the ESPHome logical level. The configured RX pin is
+    // inverted because the Pico-DALI2 transceiver is physically active-low;
+    // logical HIGH therefore means that another device asserts the DALI line.
+    bool rx_asserted = dali_rx::logical_rx_is_asserted(m_rxPin->digital_read());
     if (!dali_tx::is_collision(bit, half, rx_asserted)) return false;
 
     m_tx_collision_ = true;
@@ -1597,23 +1598,23 @@ bool DaliBusComponent::readBackwardFrame_(uint8_t &data) {
     halves[0] = true;
 
     delayMicroseconds(HALF_BIT_PERIOD + QUARTER_BIT_PERIOD);
-    halves[1] = m_rxPin->digital_read() == LOW;
+    halves[1] = dali_rx::logical_rx_is_asserted(m_rxPin->digital_read());
 
     for (int bit = 0; bit < 8; bit++) {
         delayMicroseconds(HALF_BIT_PERIOD);
-        halves[2 + bit * 2] = m_rxPin->digital_read() == LOW;
+        halves[2 + bit * 2] = dali_rx::logical_rx_is_asserted(m_rxPin->digital_read());
         delayMicroseconds(HALF_BIT_PERIOD);
-        halves[3 + bit * 2] = m_rxPin->digital_read() == LOW;
+        halves[3 + bit * 2] = dali_rx::logical_rx_is_asserted(m_rxPin->digital_read());
     }
 
     delayMicroseconds(HALF_BIT_PERIOD);
-    halves[18] = m_rxPin->digital_read() == LOW;
+    halves[18] = dali_rx::logical_rx_is_asserted(m_rxPin->digital_read());
     delayMicroseconds(HALF_BIT_PERIOD);
-    halves[19] = m_rxPin->digital_read() == LOW;
+    halves[19] = dali_rx::logical_rx_is_asserted(m_rxPin->digital_read());
     delayMicroseconds(HALF_BIT_PERIOD);
-    halves[20] = m_rxPin->digital_read() == LOW;
+    halves[20] = dali_rx::logical_rx_is_asserted(m_rxPin->digital_read());
     delayMicroseconds(HALF_BIT_PERIOD);
-    halves[21] = m_rxPin->digital_read() == LOW;
+    halves[21] = dali_rx::logical_rx_is_asserted(m_rxPin->digital_read());
 
     return dali_rx::decode_backward_frame_halves(halves, data);
 }
@@ -1679,14 +1680,14 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
     // A real backward frame can't start the instant we begin listening: per
     // IEC 62386-101 a control gear's reply starts at least ~7 Te after the
     // forward frame's stop condition, which is later than this point. If RX is
-    // already LOW right now, the line is stuck/asserted (e.g. DALI bus
+    // already asserted right now, the line is stuck/asserted (e.g. DALI bus
     // disconnected) rather than carrying a genuine start bit -- treat it as a
     // NACK immediately instead of "reading" a phantom 0xFF reply, which would
     // otherwise make isControlGearPresent()/compareSearchAddress() see a bus
     // full of devices and send run_discovery() into a runaway loop.
-    if (m_rxPin->digital_read() == LOW) {
+    if (dali_rx::logical_rx_is_asserted(m_rxPin->digital_read())) {
         if (m_debug_frames) {
-            DALI_LOGD("RX: 00 (NACK, line stuck low)");
+            DALI_LOGD("RX: 00 (NACK, line stuck asserted)");
         }
         note_disconnected_(true);
         return 0;
@@ -1695,7 +1696,7 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
 
     // Wait for the reply's START bit. Bounded by timeout_ms so a silent/stuck-idle bus
     // returns a NACK instead of spinning forever (see DALI_BACKWARD_TIMEOUT_MS).
-    while (m_rxPin->digital_read() == HIGH) {
+    while (!dali_rx::logical_rx_is_asserted(m_rxPin->digital_read())) {
         if (millis() - startTime >= timeout_ms) {
             if (m_debug_frames) {
                 DALI_LOGD("RX: 00 (NACK)");

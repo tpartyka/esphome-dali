@@ -57,7 +57,11 @@ web_server:
 dali:
   id: dali_bus
   tx_pin: GPIO4
-  rx_pin: GPIO5
+  # Pico-DALI2 RX output is physically active-low. ESPHome exposes logical
+  # HIGH for an asserted DALI line after this inversion.
+  rx_pin:
+    number: GPIO5
+    inverted: true
   discovery: true                  # Auto-discover devices on the bus. default: false. allowed: true, false
   initialize_addresses: none       # Auto-assign short addresses. default: none. allowed: none, unassigned, all (also accepts legacy true/false)
   max_lights: 64                   # Reserved entity slots for discovered lamps. default: 64. allowed: 1-64
