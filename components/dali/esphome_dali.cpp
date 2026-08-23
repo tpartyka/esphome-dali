@@ -23,6 +23,7 @@
 #include "dali_bus_health.h"
 #include "dali_backward_frame.h"
 #include "dali_inventory.h"
+#include "dali_rx_echo_probe.h"
 #include "dali_scene_metadata.h"
 #include "dali_tx_collision.h"
 
@@ -288,7 +289,7 @@ public:
 
 #ifdef USE_SENSOR
 // Auto-created (no YAML) diagnostic sensor for lifetime bus-health counters
-// ("DALI Bus Errors", "DALI Bus Down Events", "DALI Collisions").
+// ("DALI Poll Misses", "DALI Bus Down Events", "DALI Collisions").
 class DaliDiagSensor : public esphome::sensor::Sensor, public esphome::Component {
 public:
     void configure_dynamic_entity(const char* name, const char* object_id) {
@@ -1335,7 +1336,9 @@ void DaliBusComponent::create_diag_sensors() {
 
 #ifdef USE_BINARY_SENSOR
     auto* ds = new DaliDiagBinarySensor {};
-    ds->configure_dynamic_entity("DALI Bus Disconnected", "dali_bus_disconnected");
+    // Keep the legacy object ID so existing Home Assistant entity registrations
+    // survive the clearer display name.
+    ds->configure_dynamic_entity("DALI RX Stuck Low", "dali_bus_disconnected");
     App.register_binary_sensor(ds);
     static_cast<AppRegistrationAccessor&>(App).register_component_(ds);
     ds->publish_initial_state(false);
@@ -1344,7 +1347,9 @@ void DaliBusComponent::create_diag_sensors() {
 
 #ifdef USE_SENSOR
     auto* errs = new DaliDiagSensor {};
-    errs->configure_dynamic_entity("DALI Bus Errors", "dali_bus_errors");
+    // Keep the legacy object ID so existing Home Assistant entity registrations
+    // survive the clearer display name.
+    errs->configure_dynamic_entity("DALI Poll Misses", "dali_bus_errors");
     App.register_sensor(errs);
     static_cast<AppRegistrationAccessor&>(App).register_component_(errs);
     errs->publish_state(0);
@@ -1549,11 +1554,15 @@ void DaliBusComponent::dump_config() {
 #define HALF_BIT_PERIOD_POST (HALF_BIT_PERIOD - 6) - HALF_BIT_PERIOD_PRE
 
 bool DaliBusComponent::check_collision_(bool bit, int half) {
-    if (!m_input_devices) return false;
+    if (!m_input_devices && !m_debug_rx_echo) return false;
     // `digital_read()` is the ESPHome logical level. The configured RX pin is
     // inverted because the Pico-DALI2 transceiver is physically active-low;
     // logical HIGH therefore means that another device asserts the DALI line.
     bool rx_asserted = dali_rx::logical_rx_is_asserted(m_rxPin->digital_read());
+    if (m_debug_rx_echo) {
+        dali_rx_echo::record(m_rx_echo_counter_, bit, static_cast<uint8_t>(half), rx_asserted);
+    }
+    if (!m_input_devices) return false;
     if (!dali_tx::is_collision(bit, half, rx_asserted)) return false;
 
     m_tx_collision_ = true;
@@ -1638,6 +1647,7 @@ void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
     // Don't let the input listener decode our own transmission (un-suppressed on exit).
     ListenerSuppressGuard suppress(&m_input_listener, m_input_devices);
     m_tx_collision_ = false;
+    m_rx_echo_counter_ = {};
 
     if (m_debug_frames) {
         DALI_LOGD("TX: %02x %02x", address, data);
@@ -1661,6 +1671,11 @@ void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
         if (!complete) {
             DALI_LOGW("TX aborted after DALI bus collision");
         }
+    }
+
+    if (m_debug_rx_echo) {
+        DALI_LOGD("RX probe: TX echo %u/%u half-bits", m_rx_echo_counter_.matches,
+                  m_rx_echo_counter_.samples);
     }
 
     // A forward frame has completed (or was aborted); a later forward frame

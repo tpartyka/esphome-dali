@@ -53,15 +53,19 @@ external_components:
 web_server:
   port: 8080
 
-# Bit-banged 1200 baud DALI bus (master)
+# Bit-banged 1200 baud DALI bus (master) on ESP32-S3-ETH + Pico-DALI2.
+# Keep these separate from the W5500 Ethernet SPI pins (GPIO9..14).
 dali:
   id: dali_bus
-  tx_pin: GPIO4
+  tx_pin: GPIO42
   # Pico-DALI2 RX output is physically active-low. ESPHome exposes logical
   # HIGH for an asserted DALI line after this inversion.
   rx_pin:
-    number: GPIO5
+    number: GPIO47
     inverted: true
+  # Temporary RX hardware-path diagnostic. Remove these two lines after the test.
+  debug_frames: true
+  debug_rx_echo: true
   discovery: true                  # Auto-discover devices on the bus. default: false. allowed: true, false
   initialize_addresses: none       # Auto-assign short addresses. default: none. allowed: none, unassigned, all (also accepts legacy true/false)
   max_lights: 64                   # Reserved entity slots for discovered lamps. default: 64. allowed: 1-64

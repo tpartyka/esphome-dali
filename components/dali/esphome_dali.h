@@ -15,6 +15,7 @@
 #include "dali_circadian.h"
 #include "dali_event_log.h"
 #include "dali_names.h"
+#include "dali_rx_echo_probe.h"
 #include "dali_scene_metadata.h"
 #include "dali_transaction_queue.h"
 #include "esphome_dali_input.h"
@@ -132,7 +133,7 @@ public:
     bool expose_bus_status() const { return m_expose_bus_status; }
 
     /// @brief Whether to create software-only line/PSU diagnostic entities: lifetime
-    /// "DALI Bus Errors"/"DALI Bus Down Events" counters, a "DALI Bus Disconnected"
+    /// "DALI Poll Misses"/"DALI Bus Down Events" counters, a "DALI RX Stuck Low"
     /// binary_sensor (RX stuck low = no PSU/physically disconnected), and (when
     /// `input_devices` is enabled) a "DALI Collisions" counter from the multi-master
     /// collision detector.
@@ -263,6 +264,9 @@ public:
     void set_dashboard_port(uint16_t port) { m_dashboard_port = port; }
     /// Enable DEBUG-level logging of DALI forward and backward frames.
     void set_debug_frames(bool v) { m_debug_frames = v; }
+    /// Sample RX during every transmitted half-bit and report whether the
+    /// transceiver echoes the line this master drives. Diagnostic-only.
+    void set_debug_rx_echo(bool v) { m_debug_rx_echo = v; }
 #ifdef DALI_WEB_DASHBOARD_ENABLED
     /// @brief The shared `web_server_base` instance (also used by `web_server:`)
     /// that the dashboard registers itself onto in setup(), taking priority over
@@ -369,10 +373,9 @@ public: // DaliPort
 
 private:
     bool writeBit(bool bit);
-    /// @brief If `input_devices` is enabled, sample the RX pin during a half-bit
-    /// where `writeBit()` is releasing the bus (per dali_tx::master_releasing) and
-    /// bump the collision counter if another master is driving it low. half: 0 =
-    /// first half-bit, 1 = second. No-op (and no extra delay) if input_devices is off.
+    /// @brief Sample RX during a transmitted half-bit for collision detection and,
+    /// when enabled, diagnostic TX-to-RX echo measurement. half: 0 = first half-bit,
+    /// 1 = second.
     bool check_collision_(bool bit, int half);
     bool writeByte(uint8_t b);
     /// Sample, structurally validate, and decode one complete DALI backward frame.
@@ -427,13 +430,13 @@ private:
     /// lamp re-applies its own recovery config on its unavailable->available edge.
     void on_bus_recovered_();
 
-    /// @brief Increment + publish the "DALI Bus Errors" counter (a polled lamp did
+    /// @brief Increment + publish the "DALI Poll Misses" counter (a polled lamp did
     /// not respond).
     void note_poll_error_();
     /// @brief Increment + publish the "DALI Bus Down Events" counter (bus transitioned
     /// online -> offline).
     void note_bus_down_();
-    /// @brief Publish the "DALI Bus Disconnected" binary_sensor if `disconnected`
+    /// @brief Publish the "DALI RX Stuck Low" binary_sensor if `disconnected`
     /// differs from the last published value (RX stuck low at the start of
     /// receiveBackwardFrame's wait = no PSU/physically disconnected bus).
     void note_disconnected_(bool disconnected);
@@ -460,6 +463,7 @@ private:
     bool m_input_devices = false;
     bool m_tx_collision_ = false;
     bool m_inter_frame_pending_ = false;
+    dali_rx_echo::Counter m_rx_echo_counter_;
 
     bool m_discovery = false;
     uint32_t discovery_start_ms_ = 0;  // millis() when the deferred-discovery wait began
@@ -575,6 +579,7 @@ private:
     bool m_dashboard_enabled = false;
     uint16_t m_dashboard_port = 8080;
     bool m_debug_frames = false;
+    bool m_debug_rx_echo = false;
 #ifdef DALI_WEB_DASHBOARD_ENABLED
     DaliWebDashboard* m_dashboard_ = nullptr;
     web_server_base::WebServerBase* m_web_server_base_ = nullptr;

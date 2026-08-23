@@ -40,6 +40,7 @@ CONF_CIRCADIAN_GROUPS = 'circadian_groups'
 CONF_DAY_COLOR_TEMPERATURE = 'day_color_temperature'
 CONF_NIGHT_COLOR_TEMPERATURE = 'night_color_temperature'
 CONF_DEBUG_FRAMES = 'debug_frames'
+CONF_DEBUG_RX_ECHO = 'debug_rx_echo'
 
 
 def _validate_dali_level(value):
@@ -67,11 +68,11 @@ DALI_SCENE_NUMBER_COUNT = 1
 # Group-membership controls: Add + Remove buttons, and target-address + group-number.
 DALI_GROUP_BUTTON_COUNT = 2
 DALI_GROUP_NUMBER_COUNT = 2
-# Bus diagnostics: "DALI Bus Errors" + "DALI Bus Down Events" counters, plus
+# Bus diagnostics: "DALI Poll Misses" + "DALI Bus Down Events" counters, plus
 # "DALI Collisions" (only when input_devices is enabled).
 DALI_DIAG_SENSOR_COUNT = 2
 DALI_DIAG_COLLISION_SENSOR_COUNT = 1
-# Bus diagnostics: "DALI Bus Disconnected" binary_sensor.
+# Bus diagnostics: "DALI RX Stuck Low" binary_sensor.
 DALI_DIAG_BINARY_SENSOR_COUNT = 1
 
 dali_ns = cg.esphome_ns.namespace('dali')
@@ -163,10 +164,9 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_EXPOSE_PROBLEM, default=True): cv.boolean,
     # Create a single "DALI Bus Online" connectivity sensor (bus-down detection).
     cv.Optional(CONF_EXPOSE_BUS_STATUS, default=True): cv.boolean,
-    # Create software-only line diagnostics: "DALI Bus Errors" and "DALI Bus Down
-    # Events" counters, a "DALI Bus Disconnected" binary_sensor (RX stuck low, i.e.
-    # physically disconnected/no PSU, vs. devices present but not answering), and
-    # (when input_devices is enabled) a "DALI Collisions" counter from the
+    # Create software-only line diagnostics: "DALI Poll Misses" and "DALI Bus Down
+    # Events" counters, a "DALI RX Stuck Low" binary_sensor (an RX-line heuristic),
+    # and (when input_devices is enabled) a "DALI Collisions" counter from the
     # multi-master collision detector.
     cv.Optional(CONF_EXPOSE_BUS_DIAGNOSTICS, default=True): cv.boolean,
     # Persist the discovered short-address inventory to flash, so lamp entities exist
@@ -196,6 +196,10 @@ CONFIG_SCHEMA = cv.Schema({
     # Log every transmitted forward frame and received backward frame at DEBUG.
     # Kept opt-in because discovery and polling can generate substantial output.
     cv.Optional(CONF_DEBUG_FRAMES, default=False): cv.boolean,
+    # During each forwarded frame, sample RX at the centre of every half-bit and
+    # log how often it matches the locally driven DALI level. This isolates the
+    # Pico-DALI2 RX hardware path without an oscilloscope.
+    cv.Optional(CONF_DEBUG_RX_ECHO, default=False): cv.boolean,
     # Circadian color temperature: requires a `sun:` component (astronomical
     # elevation) to determine time of day. If circadian_groups is empty (the
     # default), the feature is entirely inert.
@@ -242,6 +246,7 @@ async def to_code(config: OrderedDict):
     cg.add(var.set_dashboard_enabled(config[CONF_EXPOSE_DASHBOARD]))
     cg.add(var.set_dashboard_port(config[CONF_DASHBOARD_PORT]))
     cg.add(var.set_debug_frames(config[CONF_DEBUG_FRAMES]))
+    cg.add(var.set_debug_rx_echo(config[CONF_DEBUG_RX_ECHO]))
     if config[CONF_EXPOSE_DASHBOARD] and CORE.is_esp32:
         web_server_base_var = await cg.get_variable(config[CONF_WEB_SERVER_BASE_ID])
         cg.add(var.set_web_server_base(web_server_base_var))
@@ -284,7 +289,7 @@ async def to_code(config: OrderedDict):
     if config[CONF_EXPOSE_BUS_STATUS]:
         CORE.register_platform_component("binary_sensor", var)
 
-    # Bus diagnostics: "DALI Bus Disconnected" binary_sensor, plus "DALI Bus Errors" /
+    # Bus diagnostics: "DALI RX Stuck Low" binary_sensor, plus "DALI Poll Misses" /
     # "DALI Bus Down Events" sensors, and "DALI Collisions" if input devices are enabled.
     if config[CONF_EXPOSE_BUS_DIAGNOSTICS]:
         for _ in range(DALI_DIAG_BINARY_SENSOR_COUNT):

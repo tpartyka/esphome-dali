@@ -73,7 +73,7 @@ dali:
 | `system_failure_level` | `last` \| `off` \| `0`-`254` | `last` | Level a lamp goes to if it loses DALI bus communication (DALI `SYSTEM FAILURE LEVEL`). |
 | `expose_problem` | bool | `true` | Create a diagnostic "Status" `binary_sensor` per discovered lamp: ON when the lamp is unavailable or reports the DALI `STATUS` lamp-failure bit, OFF when OK. |
 | `expose_bus_status` | bool | `true` | Create a single "DALI Bus Online" connectivity `binary_sensor` reflecting whether the bus itself is responding. |
-| `expose_bus_diagnostics` | bool | `true` | Create software-only line/PSU diagnostic entities: "DALI Bus Errors" and "DALI Bus Down Events" lifetime counters, a "DALI Bus Disconnected" `binary_sensor` (RX stuck low = no PSU/physically disconnected bus), and (when `input_devices` is enabled) a "DALI Collisions" counter from the multi-master collision detector. |
+| `expose_bus_diagnostics` | bool | `true` | Create software-only diagnostic entities: "DALI Poll Misses" and "DALI Bus Down Events" lifetime counters, a "DALI RX Stuck Low" `binary_sensor`, and (when `input_devices` is enabled) a "DALI Collisions" counter. The legacy object IDs are retained for existing Home Assistant entity registrations. |
 | `persist_inventory` | bool | `true` | Persist the discovered short-address inventory to flash, so lamp entities exist at boot (as "unavailable" if missing) even before the bus has been re-polled. Only used when `discovery` is enabled. |
 | `expose_groups` | bool | `true` | Auto-discover DALI group membership and expose one optimistic "DALI Group N" light per active group. Only used when `discovery` is enabled. |
 | `max_groups` | int, 1-16 | `16` | Maximum number of group lights (`0`..`max_groups - 1`) `expose_groups` may create. Reserves the matching number of entity slots. |
@@ -151,12 +151,13 @@ bus polling/discovery.
   level.
 - **Line/PSU diagnostics** (`expose_bus_diagnostics`): software-only
   diagnostics derived from existing bus-health signals (no extra hardware):
-  - "DALI Bus Errors": lifetime counter of polled lamps that didn't respond.
+  - "DALI Poll Misses": lifetime counter of scheduled lamp polls that did
+    not receive a presence response. It is not a general protocol-error count.
   - "DALI Bus Down Events": lifetime counter of bus online→offline
     transitions.
-  - "DALI Bus Disconnected": ON when the RX line reads stuck low at the
-    start of a reply window — distinguishes a physically disconnected/
-    unpowered bus from devices that are present but not answering.
+  - "DALI RX Stuck Low": ON when RX is low at the start of a reply window.
+    This is an electrical-line heuristic, not a definitive disconnected-bus
+    diagnosis.
   - "DALI Collisions" (only with `input_devices: true`): lifetime counter of
     multi-master collisions detected on the bit-banged TX (IEC 62386-101),
     sampled passively while this device releases the bus.

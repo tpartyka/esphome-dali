@@ -32,6 +32,7 @@ SOURCES := test_main.cpp \
            test_availability.cpp \
            test_bus_health.cpp \
            test_backward_frame.cpp \
+           test_rx_echo_probe.cpp \
            test_scene_metadata.cpp \
            test_input_frame.cpp \
            test_inventory.cpp \
