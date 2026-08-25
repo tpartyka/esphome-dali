@@ -659,7 +659,14 @@ void DaliBusComponent::restore_inventory_() {
         if (!dali_inventory::inventory_has(mask, addr)) continue;
         if (m_addresses[addr]) continue;  // already created (static YAML)
         m_addresses[addr] = 0xFFFFFF;
+
+        // setup_state() performs synchronous DALI queries and recovery
+        // configuration. Yield between restored lamps so a populated inventory
+        // cannot starve the ESP-IDF task watchdog during boot.
+        esp_task_wdt_reset();
         create_light_component(addr, 0xFFFFFF);  // setup_state() tracks it as missing if absent now
+        delay(1);
+        esp_task_wdt_reset();
         restored++;
     }
     DALI_LOGI("Restored %u light entit%s from saved inventory", restored, restored == 1 ? "y" : "ies");
