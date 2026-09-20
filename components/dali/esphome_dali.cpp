@@ -518,6 +518,13 @@ void DaliBusComponent::run_discovery(DaliInitMode mode) {
             }
             else {
                 is_discovered[short_addr] = true;
+                // The scan just proved this address is in use, which is stronger
+                // evidence than the probe that filled addr_used before the scan:
+                // that probe reads an address shared by two gear as free (their
+                // replies collide), and loses an address entirely if a single
+                // reply goes missing. Without this, the next duplicate gets
+                // programmed straight on top of a device we have already seen.
+                addr_used[short_addr] = true;
             }
 
             // Withdraw after address is confirmed (spec order: find → program → withdraw)

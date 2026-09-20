@@ -241,6 +241,12 @@ enum class DaliLedDimmingCurve : uint8_t {
 /// IEC 62386-101, so waiting for idle can never swallow an incoming reply.
 #define DALI_RX_IDLE_SETTLE_MS 4
 
+/// @brief Whether an address can be answered by more than one control gear, i.e.
+/// the broadcast address or a group address rather than a short address. A query
+/// sent to one of these gets simultaneous, overlapping replies that cannot be
+/// decoded as a single backward frame.
+inline bool isMulticastAddress(uint8_t addr) { return addr > ADDR_SHORT_MAX; }
+
 /// @brief How long to wait for an answer to COMPARE. The reply may start up to
 /// 10.5 ms after the forward frame, and the bus-idle wait above runs first, so
 /// this has to stay comfortably clear of that window: a COMPARE wrongly read as
@@ -283,6 +289,22 @@ public:
 
         if (lastTransmissionHadCollision()) return 0;
         return receiveBackwardFrame();
+    }
+
+    /// @brief Send a query to an address several control gear may share (the
+    /// broadcast or a group address) and report only whether anyone answered.
+    ///
+    /// Every addressed gear answers at the same time, so the replies overlap and
+    /// cannot be decoded as a single backward frame -- the same situation as
+    /// COMPARE, see receiveBackwardActivity(). Decoding such a query as a frame
+    /// makes a bus full of gear look empty.
+    bool anyControlGearAnswers(short_addr_t addr, DaliCommand command) {
+        sendForwardFrame(
+            (addr << 1) | DALI_COMMAND,
+            static_cast<uint8_t>(command));
+
+        if (lastTransmissionHadCollision()) return false;
+        return receiveBackwardActivity();
     }
 
     /// @brief Send a control command to the DALI bus
@@ -472,10 +494,16 @@ DaliBusManager(DaliPort& port)
     void endAddressScan();
 
     bool isControlGearPresent(short_addr_t addr = ADDR_BROADCAST) {
+        if (isMulticastAddress(addr)) {
+            return port.anyControlGearAnswers(addr, DaliCommand::QUERY_CONTROL_GEAR_PRESENT);
+        }
         return port.sendQueryCommand(addr, DaliCommand::QUERY_CONTROL_GEAR_PRESENT) != 0;
     }
 
     bool isMissingShortAddress(short_addr_t addr = ADDR_BROADCAST) {
+        if (isMulticastAddress(addr)) {
+            return port.anyControlGearAnswers(addr, DaliCommand::QUERY_MISSING_SHORT_ADDRESS);
+        }
         return port.sendQueryCommand(addr, DaliCommand::QUERY_MISSING_SHORT_ADDRESS) != 0;
     }
 
