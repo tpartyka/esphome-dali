@@ -232,11 +232,40 @@ enum class DaliLedDimmingCurve : uint8_t {
 /// at 64 addresses, an absent-heavy discovery scan no longer stalls for seconds.
 #define DALI_BACKWARD_TIMEOUT_MS 30
 
+/// @brief How long the bus may take to settle back to idle after our own forward
+/// frame before the line is considered genuinely stuck asserted (no PSU, shorted
+/// or disconnected bus). A loaded installation keeps reporting the last
+/// transmitted half-bit as asserted for a good fraction of a millisecond; a
+/// receiver that samples only once, right after the stop condition, rejects most
+/// valid replies. This bound stays below the 5.5 ms minimum reply delay of
+/// IEC 62386-101, so waiting for idle can never swallow an incoming reply.
+#define DALI_RX_IDLE_SETTLE_MS 4
+
+/// @brief How long to wait for an answer to COMPARE. The reply may start up to
+/// 10.5 ms after the forward frame, and the bus-idle wait above runs first, so
+/// this has to stay comfortably clear of that window: a COMPARE wrongly read as
+/// "no answer" sends the binary address search down the wrong branch.
+#define DALI_COMPARE_TIMEOUT_MS 15
+
 /// @brief Abstract class for interfacing with a physical DALI bus
 class DaliPort {
 public:
     virtual void sendForwardFrame(uint8_t address, uint8_t data) = 0;
     virtual uint8_t receiveBackwardFrame(unsigned long timeout_ms = DALI_BACKWARD_TIMEOUT_MS);
+
+    /// @brief Detect whether *any* control gear answered, without requiring a
+    /// structurally valid backward frame.
+    ///
+    /// COMPARE is answered simultaneously by every control gear whose random
+    /// address is within range, so the bus routinely carries several overlapping
+    /// backward frames. The composite waveform is not valid Manchester and a
+    /// frame decoder rejects it, but IEC 62386-102 defines the answer to COMPARE
+    /// as YES whenever the bus shows activity at all -- only a silent bus is NO.
+    /// The default implementation keeps non-ESPHome ports working.
+    virtual bool receiveBackwardActivity(unsigned long timeout_ms = DALI_BACKWARD_TIMEOUT_MS) {
+        return receiveBackwardFrame(timeout_ms) != 0;
+    }
+
     /// @brief Whether the most recent forward frame was aborted by a bus collision.
     virtual bool lastTransmissionHadCollision() const { return false; }
 
@@ -407,8 +436,9 @@ DaliBusManager(DaliPort& port)
             return false;
         }
 
-        const unsigned long timeout_ms = 10;
-        return (port.receiveBackwardFrame(timeout_ms) == 0xFF);
+        // Several gear answer this at once during a binary search, so ask only
+        // whether the bus answered at all -- see receiveBackwardActivity().
+        return port.receiveBackwardActivity(DALI_COMPARE_TIMEOUT_MS);
     }
 
     /// @brief Exit the initialization mode.

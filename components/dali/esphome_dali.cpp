@@ -1625,6 +1625,8 @@ bool DaliBusComponent::readBackwardFrame_(uint8_t &data) {
     delayMicroseconds(HALF_BIT_PERIOD);
     halves[21] = dali_rx::logical_rx_is_asserted(m_rxPin->digital_read());
 
+    for (int i = 0; i < 22; i++) m_last_rx_halves_[i] = halves[i];
+
     return dali_rx::decode_backward_frame_halves(halves, data);
 }
 
@@ -1681,6 +1683,63 @@ void DaliBusComponent::sendForwardFrame(uint8_t address, uint8_t data) {
     // A forward frame has completed (or was aborted); a later forward frame
     // must observe the minimum inter-frame guard.
     m_inter_frame_pending_ = true;
+
+    // Every DALI operation passes through here, so this is the one place that
+    // reliably keeps the task watchdog fed during the long synchronous loops in
+    // run_discovery() -- the binary address search spends most of its time
+    // waiting out reply windows, far longer than the watchdog period.
+    esp_task_wdt_reset();
+}
+
+bool DaliBusComponent::wait_rx_idle_() {
+    // See receiveBackwardFrame() for why the line is not sampled just once here.
+    unsigned long settleStart = millis();
+    while (dali_rx::logical_rx_is_asserted(m_rxPin->digital_read())) {
+        if (millis() - settleStart >= DALI_RX_IDLE_SETTLE_MS) {
+            if (m_debug_frames) {
+                DALI_LOGD("RX: 00 (NACK, line stuck asserted)");
+            }
+            note_disconnected_(true);
+            return false;
+        }
+    }
+    note_disconnected_(false);
+    return true;
+}
+
+bool DaliBusComponent::receiveBackwardActivity(unsigned long timeout_ms) {
+    // The reply is not decoded here: several control gear answer COMPARE at the
+    // same time and their overlapping backward frames are not valid Manchester.
+    // Any activity at all means YES (IEC 62386-102).
+    ListenerSuppressGuard suppress(&m_input_listener, m_input_devices);
+
+    if (!wait_rx_idle_()) return false;
+
+    unsigned long startTime = millis();
+    while (!dali_rx::logical_rx_is_asserted(m_rxPin->digital_read())) {
+        if (millis() - startTime >= timeout_ms) {
+            if (m_debug_frames) {
+                DALI_LOGD("RX: no answer");
+            }
+            return false;
+        }
+    }
+
+    // Someone answered. Let the colliding replies drain before returning, so the
+    // next forward frame is not transmitted on top of them.
+    unsigned long quietStart = millis();
+    unsigned long drainStart = quietStart;
+    while (millis() - quietStart < DALI_RX_IDLE_SETTLE_MS) {
+        if (dali_rx::logical_rx_is_asserted(m_rxPin->digital_read())) {
+            quietStart = millis();
+        }
+        if (millis() - drainStart >= DALI_BACKWARD_TIMEOUT_MS) break;
+        esp_task_wdt_reset();
+    }
+    if (m_debug_frames) {
+        DALI_LOGD("RX: answered (activity)");
+    }
+    return true;
 }
 
 uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
@@ -1693,21 +1752,25 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
     unsigned long startTime = millis();
 
     // A real backward frame can't start the instant we begin listening: per
-    // IEC 62386-101 a control gear's reply starts at least ~7 Te after the
-    // forward frame's stop condition, which is later than this point. If RX is
-    // already asserted right now, the line is stuck/asserted (e.g. DALI bus
-    // disconnected) rather than carrying a genuine start bit -- treat it as a
-    // NACK immediately instead of "reading" a phantom 0xFF reply, which would
-    // otherwise make isControlGearPresent()/compareSearchAddress() see a bus
-    // full of devices and send run_discovery() into a runaway loop.
-    if (dali_rx::logical_rx_is_asserted(m_rxPin->digital_read())) {
-        if (m_debug_frames) {
-            DALI_LOGD("RX: 00 (NACK, line stuck asserted)");
-        }
-        note_disconnected_(true);
-        return 0;
-    }
-    note_disconnected_(false);
+    // IEC 62386-101 a control gear's reply starts no earlier than 5.5 ms after
+    // the forward frame's stop condition. An asserted line here is therefore
+    // never a genuine start bit -- it is either our own transmission still
+    // draining off the bus, or a stuck/disconnected bus. Treating it as a
+    // phantom 0xFF reply would make isControlGearPresent()/compareSearchAddress()
+    // see a bus full of devices and send run_discovery() into a runaway loop.
+    //
+    // Sampling this only once, immediately after the stop condition, is not
+    // enough: on a loaded installation the receiver keeps reporting the last
+    // transmitted half-bit as asserted for a good fraction of a millisecond, so
+    // a single early sample rejects most perfectly good replies. Wait for the
+    // line to settle back to idle instead, and call the bus stuck only if it
+    // never releases. The bound stays below the 5.5 ms reply window, so this
+    // can never swallow a reply that is on its way.
+    if (!wait_rx_idle_()) return 0;
+
+    // Only start counting the reply timeout once the bus is actually idle, so a
+    // slow-settling bus does not eat into the window the reply may arrive in.
+    startTime = millis();
 
     // Wait for the reply's START bit. Bounded by timeout_ms so a silent/stuck-idle bus
     // returns a NACK instead of spinning forever (see DALI_BACKWARD_TIMEOUT_MS).
@@ -1729,7 +1792,14 @@ uint8_t DaliBusComponent::receiveBackwardFrame(unsigned long timeout_ms) {
 
     if (!valid) {
         if (m_debug_frames) {
-            DALI_LOGD("RX: 00 (NACK, malformed backward frame)");
+            // Log the raw half-bit samples (outside the InterruptLock above) so a
+            // frame this decoder rejects can be told apart from a silent bus.
+            // Only rejected frames are logged: logging every frame floods the
+            // log from inside the bus polling loop.
+            char halves[23];
+            for (int i = 0; i < 22; i++) halves[i] = m_last_rx_halves_[i] ? '1' : '0';
+            halves[22] = '\0';
+            DALI_LOGD("RX: 00 (NACK, malformed backward frame) halves %s", halves);
         }
         return 0;
     }

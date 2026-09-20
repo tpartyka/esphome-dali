@@ -367,11 +367,15 @@ public: // DaliPort
     void resetBus() override;
     void sendForwardFrame(uint8_t address, uint8_t data) override;
     uint8_t receiveBackwardFrame(unsigned long timeout_ms = DALI_BACKWARD_TIMEOUT_MS) override;
+    bool receiveBackwardActivity(unsigned long timeout_ms = DALI_BACKWARD_TIMEOUT_MS) override;
 
     /// @brief Whether the most recent forward frame was aborted by a collision.
     bool lastTransmissionHadCollision() const override { return m_tx_collision_; }
 
 private:
+    /// @brief Wait for the bus to settle back to idle after our own forward
+    /// frame. Returns false (and flags the bus disconnected) if it never does.
+    bool wait_rx_idle_();
     bool writeBit(bool bit);
     /// @brief Sample RX during a transmitted half-bit for collision detection and,
     /// when enabled, diagnostic TX-to-RX echo measurement. half: 0 = first half-bit,
@@ -580,6 +584,10 @@ private:
     uint16_t m_dashboard_port = 8080;
     bool m_debug_frames = false;
     bool m_debug_rx_echo = false;
+    /// Raw half-bit samples of the most recent backward frame, captured inside
+    /// readBackwardFrame_() so `debug_frames` can log them once the timing
+    /// critical section (and its InterruptLock) has been left again.
+    bool m_last_rx_halves_[22] = {};
 #ifdef DALI_WEB_DASHBOARD_ENABLED
     DaliWebDashboard* m_dashboard_ = nullptr;
     web_server_base::WebServerBase* m_web_server_base_ = nullptr;
