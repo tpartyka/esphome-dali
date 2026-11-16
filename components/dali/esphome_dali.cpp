@@ -882,6 +882,10 @@ void DaliBusComponent::create_group_lights_(uint64_t present_mask) {
         active_groups |= groups;
     }
 
+    create_group_lights_for_mask_(active_groups);
+}
+
+void DaliBusComponent::create_group_lights_for_mask_(uint16_t active_groups) {
     uint8_t created = 0;
     for (uint8_t g = 0; g < m_max_groups; g++) {
         if (!(active_groups & (1u << g))) continue;
@@ -1432,7 +1436,46 @@ void DaliBusComponent::on_bus_recovered_() {
     // The bus came back (e.g. DALI PSU restored). Rebuild any entities for devices
     // present but not yet created; each existing lamp re-applies its own recovery
     // config on its individual unavailable->available transition during polling.
-    create_entities_for_present_devices();
+    //
+    // Not create_entities_for_present_devices(): that runs the whole scan (64
+    // presence probes + a group query per lamp) inside this one loop() call, and on
+    // a bus that has just come back -- often still noisy -- it took 5 s, the task
+    // watchdog limit (a reset seen in the field). loop() does one query per tick.
+    m_rescan_.start(m_expose_groups);
+    m_rescan_groups_ = 0;
+    m_rescan_created_ = 0;
+    DALI_LOGI("Rescanning bus for addressed devices (one query per loop)...");
+}
+
+void DaliBusComponent::step_rescan_() {
+    const dali_rescan::Step step = m_rescan_.next();
+    switch (step.kind) {
+        case dali_rescan::StepKind::ProbePresence: {
+            const bool present = dali.isDevicePresent(step.addr);
+            m_rescan_.report_presence(step.addr, present);
+            if (present && !m_addresses[step.addr]) {
+                m_addresses[step.addr] = 0xFFFFFF;  // mark created (long address unknown here)
+                create_light_component(step.addr, 0xFFFFFF);
+                m_rescan_created_++;
+            }
+            break;
+        }
+        case dali_rescan::StepKind::QueryGroups: {
+            const uint16_t groups = dali.scene.queryGroups(step.addr);
+            m_group_membership_[step.addr] = groups;
+            m_rescan_groups_ |= groups;
+            m_rescan_.report_groups(step.addr);
+            break;
+        }
+        case dali_rescan::StepKind::Finish:
+            DALI_LOGI("Rescan done: created %u light entit%s", m_rescan_created_,
+                      m_rescan_created_ == 1 ? "y" : "ies");
+            save_inventory_(m_rescan_.present_mask());
+            if (m_expose_groups) create_group_lights_for_mask_(m_rescan_groups_);
+            break;
+        case dali_rescan::StepKind::None:
+            break;
+    }
 }
 
 void DaliBusComponent::loop() {
@@ -1452,6 +1495,14 @@ void DaliBusComponent::loop() {
     // synchronous, atomic DTR/colour sequence, so no queued poll can interleave
     // between its prerequisite frames and final command.
     const bool interactive_dispatched = process_next_transaction_();
+
+    // A post-recovery rescan takes the bus for its one query this tick instead of
+    // state polling; polling resumes when it finishes (~70-100 ticks).
+    if (!interactive_dispatched && m_rescan_.active()) {
+        step_rescan_();
+        update_circadian_();
+        return;
+    }
 
     // Reflect external lamp changes (broadcast, other controllers) back into HA by
     // polling real device state. One device per tick, round-robin, so each is polled

@@ -13,6 +13,7 @@
 #include <vector>
 #include "dali.h"
 #include "dali_circadian.h"
+#include "dali_rescan.h"
 #include "dali_event_log.h"
 #include "dali_names.h"
 #include "dali_rx_echo_probe.h"
@@ -401,6 +402,10 @@ private:
     /// @brief Query group membership of every present device and create a group light
     /// for each active group. present_mask: bit a set => short address a is present.
     void create_group_lights_(uint64_t present_mask);
+    /// @brief Create a group light for each group set in active_groups that has none yet.
+    void create_group_lights_for_mask_(uint16_t active_groups);
+    /// @brief Perform one step (at most one bus query) of the post-recovery rescan.
+    void step_rescan_();
     /// @brief Non-destructively presence-scan addresses 0-63 and create a light
     /// entity for any device that doesn't already have one. Reads only; never
     /// reassigns addresses. Lets entities be rebuilt every boot without re-running
@@ -495,6 +500,10 @@ private:
     binary_sensor::BinarySensor* m_bus_sensor_ = nullptr;
     bool m_bus_online_ = true;
     bool m_round_any_response_ = false;
+    // Rescan after bus recovery, one bus query per loop() tick (see dali_rescan.h).
+    dali_rescan::Rescan m_rescan_;
+    uint16_t m_rescan_groups_ = 0;
+    uint8_t m_rescan_created_ = 0;
     uint8_t m_bus_down_rounds_ = 0;
 
     // Inventory persistence (phase 5): a 64-bit mask of known short addresses saved
