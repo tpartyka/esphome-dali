@@ -39,6 +39,7 @@ SOURCES := test_main.cpp \
            test_names.cpp \
            test_event_log.cpp \
            test_rescan.cpp \
+           test_address.cpp \
            test_circadian.cpp \
            $(DALI_DIR)/dali_bus_manager.cpp
 
