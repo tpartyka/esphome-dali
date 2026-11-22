@@ -42,7 +42,7 @@ typedef uint8_t short_addr_t;
 
 #define ADDR_BROADCAST (0x7F)       // 1111 111
 #define ADDR_GROUP     (0x40)       // 100x xxx
-#define ADDR_GROUP_MASK (0x70)       // 111x xxx
+#define ADDR_GROUP_MASK (0x70)       // 111x xxx -- not a short/group test, use dali_address.h
 #define ADDR_SHORT_MAX  (63)
 
 #define DALI_COMMAND    (0x01)

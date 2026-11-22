@@ -2,6 +2,7 @@
 #include <esphome.h>
 #include <cmath>
 #include "dali_availability.h"
+#include "dali_address.h"
 #include "dali_debounce.h"
 #include "esphome_dali_light.h"
 #include "esphome/core/log.h"
@@ -59,7 +60,7 @@ void dali::DaliLight::setup_state(light::LightState *state) {
     // Initialization code for DaliLight
 
     // Exclude broadcast and group addresses
-    if ((this->address_ != ADDR_BROADCAST) && ((this->address_ & ADDR_GROUP_MASK) == 0)) {
+    if (dali_addr::is_short(this->address_)) {
         ESP_LOGD(TAG, "Querying DALI device capabilities...");
         if (bus->dali.isDevicePresent(address_)) {
             ESP_LOGD(TAG, "DALI[%.2x] Is Present", address_);
@@ -321,7 +322,7 @@ void dali::DaliLight::write_state(light::LightState *state) {
         // A group/broadcast command reaches its members on the bus instantly, but
         // their individual HA entities only learn of it on the next poll cycle.
         // Optimistically reflect the new state now so HA stays in sync.
-        if ((address_ & ADDR_GROUP_MASK) != 0) {
+        if (!dali_addr::is_short(address_)) {
             GroupStateUpdate update;
             update.on = false;
             bus->sync_group_member_states(address_ & 0x0F, update);
@@ -342,7 +343,7 @@ void dali::DaliLight::write_state(light::LightState *state) {
         // Only update if temperature has changed, to allow faster brightness changes
         if (dali_color_temperature != last_temperature_) {
             if (dali_circadian::should_disable_for_manual_override(
-                    (address_ & ADDR_GROUP_MASK) != 0, circadian_call_in_progress_,
+                    !dali_addr::is_short(address_), circadian_call_in_progress_,
                     startup_state_pending_, dali_color_temperature != last_temperature_)) {
                 bus->disable_circadian_for_manual_override(address_ & 0x0F);
             }
@@ -363,7 +364,7 @@ void dali::DaliLight::write_state(light::LightState *state) {
     pw.brightness_f = brightness;
 
     // See comment above: optimistically sync group commands to member lamps.
-    if ((address_ & ADDR_GROUP_MASK) != 0) {
+    if (!dali_addr::is_short(address_)) {
         GroupStateUpdate update;
         update.on = true;
         update.brightness = brightness;
@@ -428,7 +429,7 @@ void dali::DaliLight::publish_status_() {
 }
 
 void dali::DaliLight::apply_recovery_config_() {
-    if ((this->address_ == ADDR_BROADCAST) || ((this->address_ & ADDR_GROUP_MASK) != 0)) return;
+    if (!dali_addr::is_short(this->address_)) return;
     uint8_t pol = bus->power_on_level();
     uint8_t sfl = bus->system_failure_level();
     bus->dali.lamp.setPowerOnLevel(this->address_, pol);
@@ -440,7 +441,7 @@ bool dali::DaliLight::poll_and_publish() {
     // Not individually pollable (no state object, or broadcast/group address): return
     // true so it isn't counted as a NACK against bus health.
     if (this->state_ == nullptr) return true;
-    if ((this->address_ == ADDR_BROADCAST) || ((this->address_ & ADDR_GROUP_MASK) != 0)) return true;
+    if (!dali_addr::is_short(this->address_)) return true;
 
     // --- Availability -------------------------------------------------------
     bool present = bus->dali.isDevicePresent(this->address_);

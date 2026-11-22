@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include "esphome_dali.h"
+#include "dali_address.h"
 #include "esphome_dali_light.h"
 #include "port.h"
 #ifdef DALI_CIRCADIAN_ENABLED
@@ -1142,7 +1143,7 @@ void DaliBusComponent::do_scene_action(uint8_t target_addr, uint8_t scene, Scene
     // DALI Part 102 scenes only store brightness; m_scene_color_temp_ is a software
     // side-table for group/individual-lamp targets only (not ADDR_BROADCAST, which
     // the HA "DALI Scene N" buttons use and which has no single CT to capture).
-    bool is_group = (target_addr != ADDR_BROADCAST) && ((target_addr & ADDR_GROUP_MASK) != 0);
+    bool is_group = dali_addr::is_group(target_addr);
     bool is_lamp = target_addr <= ADDR_SHORT_MAX;
 
     switch (action) {
@@ -1299,7 +1300,7 @@ DaliLight* DaliBusComponent::find_light_for_address(uint8_t addr) const {
         }
         return nullptr;
     }
-    if ((addr & ADDR_GROUP_MASK) != 0) {
+    if (dali_addr::is_group(addr)) {
         return group_light(addr & 0x0F);
     }
     return nullptr;
